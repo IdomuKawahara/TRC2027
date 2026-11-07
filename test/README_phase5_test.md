@@ -1,6 +1,6 @@
 # Phase5 (カメラ最終接近) の仕組みと単体テストの使い方
 
-対象: `main/main2.py` の Phase5、`sensor/goal_vision.py`、`test/test_phase5_live.py`
+対象: `main/main6.py` (と `main/main2.py`) の Phase5、`sensor/goal_vision.py`、`test/test_phase5_live.py`
 
 ---
 
@@ -154,7 +154,7 @@ python3 test/test_phase5_live.py --no-shape --target-height 0.12   # 高さ 12cm
 python3 test/test_phase5_live.py --drive --timeout 60
 ```
 
-`main2.py` の Phase5 (`phase5_camera_approach`) を **そのまま** 実行します。表示も本番と同じです。
+`main6.py` の Phase5 (`phase5_camera_approach`) を **そのまま** 実行します。表示も本番と同じです。
 
 - `yes` と入力すると 3 秒後に開始します。Ctrl+C で緊急停止します。
 - 機体を床に置き、周りに人や物がないことを確認してから実行してください。
@@ -195,7 +195,7 @@ python3 test/test_phase5_live.py --drive --timeout 60
 
 ---
 
-## 6. 調整する値 (main/main2.py の設定値セクション)
+## 6. 調整する値 (main/main6.py の設定値セクション。main2.py も同じ名前)
 
 | 設定 | 既定 | 意味 |
 |---|---|---|

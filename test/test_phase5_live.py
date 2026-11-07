@@ -10,7 +10,7 @@ TRC2027/test/test_phase5_live.py
   (既定) 検知モード  … カメラ (+ 超音波) だけを使い、モータは一切動かさない。
                        毎フレーム「ゴールがどこに見えるか」「Phase5 なら次に何をするか」
                        を表示する。机の上でも安全に試せる。
-  --drive            … main2.py の phase5_camera_approach() をそのまま実行する。
+  --drive            … main6.py の phase5_camera_approach() をそのまま実行する。
                        ★モータが動く★ 機体を床に置き、周りに人や物がないことを確認すること。
 
 使い方 (詳しくは test/README_phase5_test.md):
@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "sensor"))
 sys.path.insert(0, str(ROOT / "main"))
 
-import main2 as M          # noqa: E402  (import だけではハードウェアは初期化されない)
+import main6 as M          # noqa: E402  (最新の main6.py を使う。import だけではハードウェアは初期化されない)
 import goal_vision as gv   # noqa: E402
 
 # IMX219 を全画角モード (CAM_FULL_FOV=True) で使ったときの水平画角 [deg]
@@ -88,7 +88,7 @@ def direction_words(det: gv.GoalDetection) -> str:
 
 
 def planned_action(det, sonar_m, lost):
-    """main2.phase5_camera_approach() のメインループと同じ条件で、
+    """main6.phase5_camera_approach() のメインループと同じ条件で、
     Phase5 なら次に何をするかを返す。戻り値: (表示用文字列, 超音波確認が必要か)"""
     if not det.detected:
         if lost <= M.CAM_LOST_HOLD_FRAMES:
@@ -110,7 +110,7 @@ def planned_action(det, sonar_m, lost):
 
 
 # ===========================================================================
-# 設定の上書き (コマンドライン → main2 の設定値)
+# 設定の上書き (コマンドライン → main6 の設定値)
 # ===========================================================================
 
 def apply_overrides(args):
@@ -282,12 +282,12 @@ def run_detect(args):
 
 
 # ===========================================================================
-# 走行モード (main2.py の Phase5 をそのまま実行。モータが動く)
+# 走行モード (main6.py の Phase5 をそのまま実行。モータが動く)
 # ===========================================================================
 
 def run_drive(args):
     print("\n" + "!" * 62)
-    print("  ★ 走行モード: main2.py の Phase5 をそのまま実行します。モータが動きます ★")
+    print("  ★ 走行モード: main6.py の Phase5 をそのまま実行します。モータが動きます ★")
     print(f"  タイムアウト {M.FINAL_APPROACH_TIMEOUT_SEC:.0f} 秒 / Ctrl+C で緊急停止")
     print("  機体を床に置き、周囲に人や物がないことを確認してください。")
     print("!" * 62)
@@ -348,10 +348,10 @@ def main():
     ap = argparse.ArgumentParser(
         description="Phase5 (カメラ色検知による最終接近) の単体テスト。既定ではモータを動かさない。")
     ap.add_argument("--drive", action="store_true",
-                    help="★モータが動く★ main2.py の Phase5 をそのまま実行する")
+                    help="★モータが動く★ main6.py の Phase5 をそのまま実行する")
     ap.add_argument("--yes", action="store_true", help="--drive の確認入力を省略する")
     ap.add_argument("--timeout", type=float, default=0,
-                    help="--drive 時の Phase5 タイムアウト [s] (既定: main2 の設定値)")
+                    help="--drive 時の Phase5 タイムアウト [s] (既定: main6 の設定値)")
     ap.add_argument("--blink-sec", type=float, default=2.0,
                     help="--drive 時のフェーズ開始 LED 点滅秒数 (既定 2 秒に短縮)")
     ap.add_argument("--no-sonar", action="store_true", help="超音波センサを使わない (検知モードのみ)")

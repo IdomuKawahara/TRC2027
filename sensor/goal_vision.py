@@ -33,6 +33,8 @@ TRC2027/sensor/goal_vision.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
+import math
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -596,6 +598,8 @@ class PiCameraCapture:
         self.last_error = None
 
     def start(self) -> bool:
+        if self.cam is not None:
+            return True          # 起動済み (Phase4 から引き継いだ場合など)
         try:
             from picamera2 import Picamera2
         except Exception as e:
@@ -661,6 +665,148 @@ class PiCameraCapture:
             except Exception:
                 pass
             self.cam = None
+
+
+# ===========================================================================
+# Phase4 用: 走行中にゴールを見張る (ConeWatcher) / ゴールと確定する (ConeLock)
+# ===========================================================================
+
+HFOV_DEG = 62.2   # IMX219 全画角モードの水平画角 [deg]
+
+
+def image_bearing_deg(det: GoalDetection, hfov_deg: float = HFOV_DEG) -> float:
+    """画面上の重心 x から、カメラ正面に対するゴールの方向 [deg] (+ = 右)。"""
+    half = math.radians(hfov_deg / 2)
+    return math.degrees(math.atan((det.cx - 0.5) * 2.0 * math.tan(half)))
+
+
+class ConeWatcher:
+    """
+    カメラで撮影 → 検知 を interval 秒ごとに繰り返し、最新の検知結果を保持する。
+    threaded=True (本番) なら別スレッドで回し、Phase4 の制御ループ (0.1 秒周期)
+    を止めない。threaded=False (テスト) なら latest() を呼んだときに必要なら撮影する。
+    """
+
+    def __init__(self, camera, detector, interval=0.25, threaded=True, clock=time.time):
+        self.camera = camera
+        self.detector = detector
+        self.interval = interval
+        self.threaded = threaded
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._latest = None          # (GoalDetection, 撮影時刻, 通し番号)
+        self._seq = 0
+        self._last_shot = -1e18
+        self._stop = threading.Event()
+        self._thread = None
+        self.fail_count = 0
+
+    def _shoot(self):
+        rgb = self.camera.capture_rgb(discard=0)
+        if rgb is None:
+            self.fail_count += 1
+            return
+        self.fail_count = 0
+        det = self.detector.detect(rgb)
+        with self._lock:
+            self._seq += 1
+            self._latest = (det, self.clock(), self._seq)
+
+    def _loop(self):
+        while not self._stop.is_set():
+            t0 = time.time()
+            try:
+                self._shoot()
+            except Exception:
+                self.fail_count += 1
+            self._stop.wait(max(0.0, self.interval - (time.time() - t0)))
+
+    def start(self) -> bool:
+        if not self.camera.start():
+            return False
+        if self.threaded:
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
+        return True
+
+    def latest(self):
+        """最新の (GoalDetection, 撮影時刻, 通し番号)。まだ無ければ None。"""
+        if not self.threaded:
+            now = self.clock()
+            if now - self._last_shot >= self.interval:
+                self._last_shot = now
+                self._shoot()
+        with self._lock:
+            return self._latest
+
+    def stop(self):
+        """撮影ループを止める (カメラは閉じない: Phase5 に引き継ぐため)。"""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+    def close(self):
+        self.stop()
+        self.camera.close()
+
+
+class ConeLock:
+    """
+    Phase4 の走行中に見えた赤い物を「ゴール」と確定してよいかを判断する。
+      * confirm_frames 枚続けて見えている
+      * 連続するフレームで、地図上の方向 (機体方位 + 画面上の方向) が
+        consistency_deg 以内でそろっている (一瞬の誤検知や別々の物を弾く)
+      * GPS 上の距離が gps_check_min_dist_m より遠いときは、GPS の目標方位とも
+        gps_bearing_tol_deg 以内で合っている (遠くの無関係な赤い物を弾く)。
+        近くでは GPS の方位が当てにならないので確認しない。
+    """
+
+    def __init__(self, confirm_frames=3, consistency_deg=20.0,
+                 gps_check_min_dist_m=4.0, gps_bearing_tol_deg=60.0, hfov_deg=HFOV_DEG):
+        self.confirm_frames = confirm_frames
+        self.consistency_deg = consistency_deg
+        self.gps_check_min_dist_m = gps_check_min_dist_m
+        self.gps_bearing_tol_deg = gps_bearing_tol_deg
+        self.hfov_deg = hfov_deg
+        self.count = 0
+        self.last_world_bearing = None
+        self.last_reason = ""
+        self.world_bearing = None
+
+    def reset(self):
+        self.count = 0
+        self.last_world_bearing = None
+
+    def update(self, det: GoalDetection, heading_deg: float,
+               target_bearing_deg: float = None, gps_dist_m: float = None) -> bool:
+        """新しいフレームごとに呼ぶ。ゴールと確定したら True。"""
+        if det is None or not det.detected:
+            self.reset()
+            self.last_reason = "見えない"
+            return False
+        world = (heading_deg + image_bearing_deg(det, self.hfov_deg)) % 360.0
+        if (gps_dist_m is not None and target_bearing_deg is not None
+                and gps_dist_m > self.gps_check_min_dist_m):
+            d = abs((world - target_bearing_deg + 180.0) % 360.0 - 180.0)
+            if d > self.gps_bearing_tol_deg:
+                self.reset()
+                self.last_reason = f"GPS の目標方位と {d:.0f}° ずれている"
+                return False
+        if self.last_world_bearing is not None:
+            d = abs((world - self.last_world_bearing + 180.0) % 360.0 - 180.0)
+            if d > self.consistency_deg:
+                self.count = 0
+                self.last_reason = f"前のフレームと方向が {d:.0f}° 違う"
+        self.last_world_bearing = world
+        self.count += 1
+        self.world_bearing = world
+        if self.count >= self.confirm_frames:
+            self.last_reason = f"{self.count} フレーム連続で方位 {world:.0f}° に検知"
+            return True
+        self.last_reason = f"確認中 {self.count}/{self.confirm_frames}"
+        return False
 
 
 # ===========================================================================
