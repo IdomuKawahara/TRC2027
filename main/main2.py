@@ -116,6 +116,13 @@ NSE2026/main/main.py
                 0m 到達は「超音波で確認できたとき」だけ成功とする。
                 カメラが使えない場合は従来の超音波左右スキャン方式
                 (phase5_sonar_fallback) に自動で切り替える。
+                ★追加: その場で1周 (BNO055 の地磁気で 360° を確認) 探しても
+                ゴールが見えなければ、少し前進して Phase4 (GPS 誘導) に戻り、
+                GPS で近づき直してから再び Phase5 に入る (最大
+                PHASE5_MAX_RETURNS_TO_GPS 回。戻った Phase4 は最低
+                PHASE4_REENTRY_MIN_SEC 秒走ってから Phase5 へ移る)。
+                カメラは上下逆に取り付けるため画像を 180° 回転して使う
+                (CAM_ROTATE_180)。
                 FINAL_APPROACH_TIMEOUT_SEC で安全タイムアウト。
 
     共通 : フェーズが切り替わるたびに LED を LED_BLINK_SEC 秒間点滅させ、
@@ -460,7 +467,8 @@ FINAL_SCAN_LOOP_DT      = 0.02  # [s]  スキャン中の超音波サンプリ�
 # カメラ設定
 CAM_SIZE            = (320, 240)  # [px]  処理解像度 (小さいほど速く省メモリ)
 CAM_FULL_FOV        = True        # True: IMX219 の全画角モード (1640x1232 ビニング) を使う
-CAM_ROTATE_180      = False       # カメラを上下逆に取り付けた場合 True
+CAM_ROTATE_180      = True        # ★変更: カメラを上下逆に取り付けるため True (画像を180°回転 = 上下と左右を入れ替え)
+                                  #   ※左右だけ入れ替えるとコーンが逆さに写り、形状判定で弾かれるので必ず180°回転にする
 CAM_SWAP_RB         = False       # 赤と青が入れ替わって見える場合 True
 CAM_WARMUP_SEC      = 1.5         # [s]  起動後の AE/AWB 収束待ち
 CAM_FAIL_LIMIT      = 10          # [回] 連続撮影失敗がこれを超えたら超音波フォールバックへ
@@ -487,9 +495,21 @@ CAM_FWD_NEAR_SEC    = 0.25        # [s]  近い時の前進パルス
 # 探索 (見失ったとき)
 CAM_LOST_HOLD_FRAMES   = 2        # [枚] これ以下の見失いは撮り直すだけ (一瞬の誤検知落ち対策)
 CAM_SEARCH_TURN_SEC    = 0.25     # [s]  探索時の 1 回の旋回パルス (画角 62° の半分程度回る長さに調整)
-CAM_SEARCH_PULSES_PER_LAP = 24    # [回] 約1周に相当するパルス数 (実機で要調整)
+CAM_SEARCH_LAP_DEG     = 360.0    # [度] ★追加: BNO055 の地磁気で測ってこれだけ回ったら「1周」
+CAM_SEARCH_PULSES_PER_LAP = 24    # [回] 地磁気が読めないときに「約1周」とみなすパルス数 (実機で要調整)
+CAM_SEARCH_MAX_PULSES_PER_LAP = 48  # [回] 地磁気で測っていても、これだけ旋回したら1周とみなす (地磁気異常時の保険)
 CAM_SEARCH_REPOSITION_SEC = 2.0   # [s]  1周しても見つからない時に前進して視点を変える
-CAM_SEARCH_MAX_LAPS    = 6        # [周] これだけ探しても見つからなければ超音波フォールバックへ
+CAM_SEARCH_MAX_LAPS    = 6        # [周] (GPS へ戻れないとき) これだけ探しても見つからなければ超音波フォールバックへ
+
+# --- Phase5 → Phase4 への戻り (★追加) ----------------------------------------
+# 1周探してもゴールが見えないときは、GPS の誤差でゴールから離れた場所にいる
+# 可能性が高い。少し前進して視点を変えたあと Phase4 (GPS 誘導) に戻り、
+# GPS でゴールに近づき直してから再び Phase5 に入る。
+PHASE5_MAX_RETURNS_TO_GPS = 3     # [回] Phase4 へ戻る最大回数 (これを超えたら Phase5 内で探索を続ける)
+PHASE4_REENTRY_MIN_SEC = 10.0     # [s]  Phase5 から戻った Phase4 は、この秒数は GPS 誘導で走ってから
+                                  #      でないと Phase5 へ移らない (戻った直後は GPS 上まだ 2m 以内のため、
+                                  #      すぐ Phase5 に戻って同じ場所で探し直すだけになるのを防ぐ)
+PHASE5_RETURN_GPS = "RETURN_GPS"  # phase5_camera_approach() の戻り値: Phase4 へ戻る
 # 障害物 (超音波は近いがカメラ上のゴールは小さい)
 CAM_OBSTACLE_TURN_SEC  = 0.6      # [s]  回避の旋回
 CAM_OBSTACLE_FWD_SEC   = 1.0      # [s]  回避の前進
@@ -1636,7 +1656,7 @@ def phase3_calibration(bno: BNO055, motor: MotorController, led: LED, start_time
 
 def phase4_guided_run(bno: BNO055, sonar: SonarSensor,
                       motor: MotorController, led: LED, start_time: float,
-                      baseline_horiz_acc: float) -> str:
+                      baseline_horiz_acc: float, min_run_sec: float = 0.0) -> str:
     """
     GPS 誘導走行。目標まで PHASE4_TO_5_RADIUS 以内に入ったら Phase4 を終了し、
     戻り値 "NEAR_GOAL" を返して Phase5 (超音波による最終接近) へ引き継ぐ。
@@ -1654,6 +1674,10 @@ def phase4_guided_run(bno: BNO055, sonar: SonarSensor,
     blink_led(led)
     log("─" * 62)
     log(f"[Phase4] GPS 誘導走行開始")
+    if min_run_sec > 0:
+        # ★追加: Phase5 でゴールが見つからず戻ってきた場合
+        log(f"[Phase4] Phase5 でゴールが見つからなかったため GPS 誘導に戻りました。"
+            f"最低 {min_run_sec:.0f} 秒は GPS 誘導で走ってから Phase5 へ移ります")
     log(f"  目標: ({TARGET_LAT}, {TARGET_LNG})  Phase5移行半径: {PHASE4_TO_5_RADIUS} m")
     log(f"  BNO055 Axis Remap 設定: BNO_ORIENTATION={BNO_ORIENTATION} (Phase0 で適用済み)")
     log(f"  スタック閾値(★厳格化): 前進中の水平加速度 < {STUCK_HORIZON_ACCEL_THRESH} m/s² "
@@ -1867,7 +1891,7 @@ def phase4_guided_run(bno: BNO055, sonar: SonarSensor,
                 log_data_status("GPS誘導走行演算 (航法計算+スタック判定)")
 
             # ── ゴール判定 (★変更: ここではミッション終了ではなく Phase5 へ移行) ──
-            if g_gps_valid and distance <= PHASE4_TO_5_RADIUS:
+            if g_gps_valid and distance <= PHASE4_TO_5_RADIUS and elapsed >= min_run_sec:
                 log(f"[Phase4] 目標まで {PHASE4_TO_5_RADIUS} m 以内に到達！ distance={distance:.2f} m")
                 log("[Phase4] Phase5 (超音波による最終接近) へ移行します。")
                 near_goal = True
@@ -2221,7 +2245,8 @@ def make_camera() -> "gv.PiCameraCapture":
 
 def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
                            led: LED, start_time: float,
-                           camera=None, detector=None) -> bool:
+                           camera=None, detector=None, bno=None,
+                           allow_return_to_gps: bool = True):
     """
     ★追加: カメラ色検知を主に使う最終接近フェーズ。
 
@@ -2233,7 +2258,9 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
 
     1 ループ = 「停止 → 撮影・検知 → 1 パルスだけ動く」(stop-and-go)。
       ・ゴールが見えない : 最後に見えた側へ小刻みに旋回して探索。
-                          約1周しても見えなければ少し前進して視点を変える。
+                          1周 (bno があれば地磁気で 360° を確認) しても見えなければ
+                          少し前進して視点を変え、Phase4 (GPS 誘導) に戻る
+                          (allow_return_to_gps=False のときは Phase5 内で探索を続ける)。
       ・ゴールが見える   : 重心のずれに比例して旋回、正面なら前進。
       ・近距離           : カメラで接触寸前 or 正面 & 超音波が近い → confirm_goal()
           1. 停止して超音波 GOAL_SONAR_SAMPLES 回 + カメラ 1 枚を取り直し、
@@ -2251,7 +2278,9 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
     従来の超音波左右スキャン (phase5_sonar_fallback) に切り替える。
 
     camera / detector はテスト用の差し替え口 (None なら実機用を生成)。
-    戻り値: True = 0m 到達 (超音波で確認済み), False = 未到達
+    bno: 探索で「1周したか」を地磁気で測るための BNO055 (None ならパルス回数で判定)。
+    戻り値: True = 0m 到達 (超音波で確認済み), False = 未到達,
+            PHASE5_RETURN_GPS = 1周してもゴールが見えないので Phase4 へ戻る
     """
     global phase, g_sonar_m
     phase = 5
@@ -2262,7 +2291,9 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
         f"R-max(G,B)>={CAM_RED_MARGIN}")
     log(f"  近距離: 面積>={CAM_NEAR_AREA_RATIO:.2f} or 超音波<={GOAL_CHECK_TRIGGER_DIST_M:.2f}m  "
         f"ゴール: 超音波中央値<={GOAL_SONAR_DIST_M:.3f}m ({GOAL_SONAR_MIN_VALID}/{GOAL_SONAR_SAMPLES}回以上有効)")
-    log(f"  タイムアウト: {FINAL_APPROACH_TIMEOUT_SEC:.0f} s")
+    log(f"  タイムアウト: {FINAL_APPROACH_TIMEOUT_SEC:.0f} s  "
+        f"1周の判定: {'地磁気で ' + str(int(CAM_SEARCH_LAP_DEG)) + '°' if bno is not None else f'旋回 {CAM_SEARCH_PULSES_PER_LAP} 回'}  "
+        f"見つからないとき: {'少し前進して Phase4 (GPS) へ戻る' if allow_return_to_gps else 'Phase5 内で探索を続ける'}")
     log_data_status("Phase5開始時点")
 
     if detector is None:
@@ -2336,6 +2367,22 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
                 time.sleep(GOAL_SONAR_INTERVAL_SEC)
         g_sonar_m = vals[-1] if vals else None
         return gv.summarize_sonar(vals)
+
+    def read_heading():
+        """★追加: 停止中に地磁気を 3 回読んで平均し、方位 [度] を返す (探索の 1 周判定用)。
+        モータ通電中は地磁気が乱れる (Phase4 の実機ログで確認済み) ため、必ず停止中に読む。
+        読めなければ None。"""
+        global g_mag
+        if bno is None:
+            return None
+        try:
+            vs = [bno.getMag() for _ in range(3)]
+            g_mag = [sum(v[i] for v in vs) / 3.0 for i in range(3)]
+            mark_sensor_ok("BNO055", "Phase5 探索の方位")
+            return calc_azimuth(g_mag)
+        except Exception as e:
+            mark_sensor_fail("BNO055", f"読み取りエラー: {e}")
+            return None
 
     blind_failures = 0
     goal_reason = ""
@@ -2411,12 +2458,15 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
     print(HDR)
     print("-" * len(HDR))
 
-    reached = timed_out = aborted = fallback = False
+    reached = timed_out = aborted = fallback = return_gps = False
     fallback_reason = ""
     contact_far = 0      # 「カメラ接触寸前 & 超音波は遠い」の連続回数
     lost = 0
     search_pulses = 0
     laps = 0
+    lap_turned = 0.0         # 今の探索で地磁気から測った旋回角の合計 [度]
+    lap_use_heading = False  # 今の探索で地磁気を使えているか
+    prev_heading = None
     last_side = "RIGHT"
     cam_fail = 0
     last_report = p5_start
@@ -2490,14 +2540,35 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
                 if lost <= CAM_LOST_HOLD_FRAMES:
                     action_str = f"HOLD({lost})"
                 else:
+                    if search_pulses == 0:
+                        # 探索 (1周) の開始: 地磁気で旋回角を測り始める
+                        prev_heading = read_heading()
+                        lap_use_heading = prev_heading is not None
+                        lap_turned = 0.0
                     pulse(last_side, CAM_SEARCH_TURN_SEC, "探索旋回")
                     search_pulses += 1
-                    action_str = f"SEARCH_{last_side}({search_pulses}/{CAM_SEARCH_PULSES_PER_LAP})"
-                    if search_pulses >= CAM_SEARCH_PULSES_PER_LAP:
+                    if lap_use_heading:
+                        h = read_heading()
+                        if h is None:
+                            lap_use_heading = False   # 途中で読めなくなったら回数で判定
+                            log("[Phase5][WARN] 地磁気が読めないため、旋回回数で1周を判定します", "WARN")
+                        else:
+                            lap_turned += calc_direction_diff(h, prev_heading)
+                            prev_heading = h
+                    if lap_use_heading:
+                        lap_done = (abs(lap_turned) >= CAM_SEARCH_LAP_DEG
+                                    or search_pulses >= CAM_SEARCH_MAX_PULSES_PER_LAP)
+                        action_str = f"SEARCH_{last_side}({abs(lap_turned):.0f}/{CAM_SEARCH_LAP_DEG:.0f}°)"
+                    else:
+                        lap_done = search_pulses >= CAM_SEARCH_PULSES_PER_LAP
+                        action_str = f"SEARCH_{last_side}({search_pulses}/{CAM_SEARCH_PULSES_PER_LAP})"
+                    if lap_done:
+                        turned = (f"地磁気で {abs(lap_turned):.0f}° 旋回" if lap_use_heading
+                                  else f"旋回 {search_pulses} 回")
                         search_pulses = 0
                         laps += 1
-                        log(f"[Phase5] 約1周探索してもゴールが見えません ({laps}/{CAM_SEARCH_MAX_LAPS})", "WARN")
-                        if laps >= CAM_SEARCH_MAX_LAPS:
+                        log(f"[Phase5] 1周探索してもゴールが見えません ({turned}, {laps}周目)", "WARN")
+                        if not allow_return_to_gps and laps >= CAM_SEARCH_MAX_LAPS:
                             fallback, fallback_reason = True, f"{laps}周探索しても見つからない"
                             break
                         d = sonar.get_distance_m()
@@ -2505,6 +2576,10 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
                             pulse("FORWARD", CAM_SEARCH_REPOSITION_SEC, "視点を変えるための前進")
                         else:
                             pulse("RIGHT", CAM_OBSTACLE_TURN_SEC, "前方が塞がっているため旋回")
+                        if allow_return_to_gps:
+                            log("[Phase5] 少し移動しました → Phase4 (GPS 誘導) に戻ってゴールに近づき直します")
+                            return_gps = True
+                            break
 
             print(f"{time.time() - p5_start:>7.2f}  {int(det.detected):>3d}  {det.area_ratio:>6.3f}  "
                   f"{det.cx:>5.2f}  {sonar_str:>8}  {state:>8}  {action_str:>16}", flush=True)
@@ -2531,6 +2606,8 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
             log(f"[Phase5] 結果: 0m 到達 (超音波で確認済み) — {goal_reason}")
         elif timed_out:
             log("[Phase5] 結果: タイムアウト (0m 到達を超音波で確認できず)")
+        elif return_gps:
+            log("[Phase5] 結果: ゴールが見つからない → Phase4 (GPS 誘導) へ戻る", "WARN")
         elif fallback:
             log(f"[Phase5] 結果: カメラ方式を中止 ({fallback_reason}) → 超音波スキャンへ", "WARN")
         else:
@@ -2538,6 +2615,8 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
         if saved["n"]:
             log(f"[Phase5] 撮影画像 {saved['n']} 枚を保存: {img_dir}")
 
+    if return_gps:
+        return PHASE5_RETURN_GPS
     if fallback and not aborted and remaining() > 5.0:
         return phase5_sonar_fallback(sonar, motor, led, start_time, blink=False,
                                      timeout_sec=remaining())
@@ -2547,6 +2626,33 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
 # ===========================================================================
 # メイン
 # ===========================================================================
+
+def run_phase4_and_5(bno, sonar, motor, led, start_time, baseline_horiz_acc):
+    """
+    ★追加: Phase4 (GPS 誘導) → Phase5 (カメラ最終接近) を実行する。
+    Phase5 が PHASE5_RETURN_GPS を返したら (1周してもゴールが見えない)、
+    Phase4 からやり直す。戻る回数は PHASE5_MAX_RETURNS_TO_GPS 回まで。
+    上限に達したら最後の Phase5 は GPS に戻らず、Phase5 内で探索を続ける
+    (それでも見つからなければ超音波スキャンへ)。
+    戻り値: Phase5 の結果 (True = 0m 到達) / Phase5 に入れなかったら None
+    """
+    returns = 0
+    min_run = 0.0
+    while True:
+        phase4_result = phase4_guided_run(bno, sonar, motor, led, start_time,
+                                          baseline_horiz_acc, min_run_sec=min_run)
+        if phase4_result != "NEAR_GOAL":
+            log(f"[Main] Phase4 の結果が {phase4_result} のため Phase5 は実行しません。", "WARN")
+            return None
+        allow_return = returns < PHASE5_MAX_RETURNS_TO_GPS
+        result = phase5_camera_approach(sonar, motor, led, start_time, bno=bno,
+                                        allow_return_to_gps=allow_return)
+        if result != PHASE5_RETURN_GPS:
+            return result
+        returns += 1
+        min_run = PHASE4_REENTRY_MIN_SEC
+        log(f"[Main] Phase5 → Phase4 へ戻ります ({returns}/{PHASE5_MAX_RETURNS_TO_GPS} 回目)", "WARN")
+
 
 def main():
     # Phase 0: 初期化
@@ -2567,15 +2673,14 @@ def main():
         # Phase 3: キャリブレーション (静止⇔スピン サイクル) & GPS 安定化
         baseline_horiz_acc = phase3_calibration(bno, motor, led, start_time)
 
-        # Phase 4: GPS 誘導走行 + スタック検知 (前方はPhase0のAxis Remapで補正済み)
-        phase4_result = phase4_guided_run(bno, sonar, motor, led, start_time, baseline_horiz_acc)
-
-        # Phase 5: 目標付近 (PHASE4_TO_5_RADIUS 以内) まで来たらカメラで最終接近
-        #          (0m 到達は超音波で確認。カメラ不調時は超音波スキャンへ自動切替)
-        if phase4_result == "NEAR_GOAL":
-            phase5_camera_approach(sonar, motor, led, start_time)
-        else:
-            log(f"[Main] Phase4 の結果が {phase4_result} のため Phase5 は実行しません。", "WARN")
+        # Phase 4 ⇄ Phase 5 (★変更)
+        #   Phase 4: GPS 誘導走行 + スタック検知 (前方はPhase0のAxis Remapで補正済み)
+        #   Phase 5: 目標付近 (PHASE4_TO_5_RADIUS 以内) まで来たらカメラで最終接近
+        #            (0m 到達は超音波で確認。カメラ不調時は超音波スキャンへ自動切替)
+        #   Phase5 で1周探してもゴールが見えなければ、少し移動して Phase4 に戻る
+        #   (最大 PHASE5_MAX_RETURNS_TO_GPS 回。戻った Phase4 は最低
+        #    PHASE4_REENTRY_MIN_SEC 秒は GPS 誘導で走ってから Phase5 へ移る)
+        run_phase4_and_5(bno, sonar, motor, led, start_time, baseline_horiz_acc)
 
         log("=" * 62)
         log("ミッションシーケンス 完了")

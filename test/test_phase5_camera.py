@@ -61,12 +61,17 @@ class World:
         self.sonar_override = sonar_override
         self.visible = visible
         self.min_dist = dist
+        self.heading = 0.0          # 機体の方位 [deg] (偽 BNO055 の地磁気に使う)
 
     def apply(self, cmd, dt):
         if cmd in ("RIGHT", "RIGHT_WEAK"):
-            self.angle -= self.turn_rate * dt * (0.5 if cmd.endswith("WEAK") else 1.0)
+            d = self.turn_rate * dt * (0.5 if cmd.endswith("WEAK") else 1.0)
+            self.angle -= d
+            self.heading += d
         elif cmd in ("LEFT", "LEFT_WEAK"):
-            self.angle += self.turn_rate * dt * (0.5 if cmd.endswith("WEAK") else 1.0)
+            d = self.turn_rate * dt * (0.5 if cmd.endswith("WEAK") else 1.0)
+            self.angle += d
+            self.heading -= d
         elif cmd == "FORWARD":
             a = math.radians(self.angle)
             # 進行方向にゴールがある分だけ近づく (横方向のずれは方位に反映)
@@ -150,6 +155,22 @@ class FakeSonar:
         pass
 
 
+class FakeBNO:
+    """偽 BNO055: 機体の方位 world.heading に対応する地磁気ベクトルを返す
+    (main2.calc_azimuth() に通すと heading になる)。"""
+    def __init__(self, world, broken=False):
+        self.world = world
+        self.broken = broken
+        self.reads = 0
+
+    def getMag(self):
+        self.reads += 1
+        if self.broken:
+            raise OSError("I2C error")
+        a = math.radians(self.world.heading + 90.0 - M.MAG_DECLINATION)
+        return [30.0 * math.cos(a), 30.0 * math.sin(a), -20.0]
+
+
 class FakeCamera:
     def __init__(self, world, start_ok=True, fail_after=None):
         self.world = world
@@ -206,12 +227,12 @@ class Phase5SimBase(unittest.TestCase):
             del M.print
         M.log = self._orig_log
 
-    def run_sim(self, world, camera=None):
+    def run_sim(self, world, camera=None, **kw):
         motor = FakeMotor(world, self.clock)
         sonar = FakeSonar(world)
         camera = camera or FakeCamera(world)
         t0 = self.clock.time()
-        result = M.phase5_camera_approach(sonar, motor, None, t0, camera=camera)
+        result = M.phase5_camera_approach(sonar, motor, None, t0, camera=camera, **kw)
         motor.stop()
         return result, motor, sonar, camera, self.clock.time() - t0
 
@@ -301,7 +322,7 @@ class TestPhase5Sim(Phase5SimBase):
         w.apply = apply
         M.FINAL_APPROACH_TIMEOUT_SEC = 30
         ok, *_ = self.run_sim(w)
-        self.assertIs(ok, False)
+        self.assertIsNot(ok, True)   # 成功にしない (見えなくなるので1周探して GPS へ戻る)
         self.assertIn("押し込み後の検証: NG", self.log_text())
 
     def test_camera_start_failure_falls_back_to_sonar(self):
@@ -320,11 +341,53 @@ class TestPhase5Sim(Phase5SimBase):
         self.assertEqual(cam.closed, 1, "フォールバック前にカメラを解放する")
 
     def test_cone_never_visible_falls_back(self):
+        # GPS へ戻れない (戻る回数の上限に達した) ときは従来どおり探索 → 超音波スキャン
         w = World(self.clock, visible=False, sonar_override=lambda wd: 3.0)
-        ok, motor, *_ = self.run_sim(w)
+        ok, motor, *_ = self.run_sim(w, allow_return_to_gps=False)
         self.assertEqual(ok, "FALLBACK")
         self.assertIn("周探索しても見つからない", self.log_text())
         self.assertIn("FORWARD", motor.history)   # 1周ごとに視点を変える前進
+
+    # ── 1周しても見つからない → 少し移動して Phase4 へ戻る ──
+    def _search_turns(self, motor):
+        return sum(1 for c in motor.history if c in ("LEFT", "RIGHT"))
+
+    def test_lap_without_goal_returns_to_gps_using_heading(self):
+        w = World(self.clock, visible=False, sonar_override=lambda wd: 3.0)
+        bno = FakeBNO(w)
+        ok, motor, *_ = self.run_sim(w, bno=bno)
+        self.assertEqual(ok, M.PHASE5_RETURN_GPS)
+        # 1 パルス = 120°/s × 0.25 s = 30° → 地磁気で 360° を測って 12 回で1周
+        self.assertGreaterEqual(abs(w.heading), 360.0)
+        self.assertLess(abs(w.heading), 360.0 + 31.0, "1周を大きく超えて回り続けない")
+        self.assertEqual(self._search_turns(motor), 12)
+        self.assertEqual(motor.history[-1], "FORWARD", "戻る前に少し前進する")
+        self.assertGreater(bno.reads, 0)
+        self.assertIn("地磁気で", self.log_text())
+        self.assertIn("Phase4 (GPS 誘導) へ戻る", self.log_text())
+
+    def test_lap_without_bno_uses_pulse_count(self):
+        w = World(self.clock, visible=False, sonar_override=lambda wd: 3.0)
+        ok, motor, *_ = self.run_sim(w)                     # bno なし
+        self.assertEqual(ok, M.PHASE5_RETURN_GPS)
+        self.assertEqual(self._search_turns(motor), M.CAM_SEARCH_PULSES_PER_LAP)
+
+    def test_broken_bno_falls_back_to_pulse_count(self):
+        w = World(self.clock, visible=False, sonar_override=lambda wd: 3.0)
+        ok, motor, *_ = self.run_sim(w, bno=FakeBNO(w, broken=True))
+        self.assertEqual(ok, M.PHASE5_RETURN_GPS)
+        self.assertEqual(self._search_turns(motor), M.CAM_SEARCH_PULSES_PER_LAP)
+
+    def test_blocked_front_turns_instead_of_forward_before_return(self):
+        w = World(self.clock, visible=False, sonar_override=lambda wd: 0.10)
+        ok, motor, *_ = self.run_sim(w, bno=FakeBNO(w))
+        self.assertEqual(ok, M.PHASE5_RETURN_GPS)
+        self.assertNotIn("FORWARD", motor.history, "前が塞がっていたら前進しない")
+
+    def test_cone_found_during_lap_does_not_return(self):
+        w = World(self.clock, angle=-150.0, dist=2.0)
+        ok, *_ = self.run_sim(w, bno=FakeBNO(w))
+        self.assertIs(ok, True)
 
     def test_images_saved_when_enabled(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as d:
@@ -336,6 +399,60 @@ class TestPhase5Sim(Phase5SimBase):
             files = list(Path(d).glob("cam_*/*.jpg"))
             self.assertTrue(files)
             self.assertTrue(any("after_push_ok" in f.name for f in files), sorted(f.name for f in files))
+
+
+class TestPhase4And5Loop(unittest.TestCase):
+    """main() の Phase4 ⇄ Phase5 のくり返し (run_phase4_and_5)。各フェーズは差し替える。"""
+
+    def setUp(self):
+        self._saved = {k: getattr(M, k) for k in ("phase4_guided_run", "phase5_camera_approach", "log")}
+        M.log = lambda *a, **k: None
+        self.p4_calls, self.p5_calls = [], []
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(M, k, v)
+
+    def _run(self, p4_results, p5_results):
+        p4 = iter(p4_results)
+        p5 = iter(p5_results)
+
+        def fake_p4(*a, min_run_sec=0.0, **k):
+            self.p4_calls.append(min_run_sec)
+            return next(p4)
+
+        def fake_p5(*a, bno=None, allow_return_to_gps=True, **k):
+            self.p5_calls.append((bno, allow_return_to_gps))
+            return next(p5)
+        M.phase4_guided_run = fake_p4
+        M.phase5_camera_approach = fake_p5
+        return M.run_phase4_and_5("BNO", None, None, None, 0.0, 0.0)
+
+    def test_return_to_gps_then_reach(self):
+        r = self._run(["NEAR_GOAL"] * 3, [M.PHASE5_RETURN_GPS, M.PHASE5_RETURN_GPS, True])
+        self.assertIs(r, True)
+        self.assertEqual(self.p4_calls, [0.0, M.PHASE4_REENTRY_MIN_SEC, M.PHASE4_REENTRY_MIN_SEC])
+        self.assertEqual([c[1] for c in self.p5_calls], [True, True, True])
+        self.assertTrue(all(c[0] == "BNO" for c in self.p5_calls), "Phase5 に BNO055 を渡す")
+
+    def test_max_returns(self):
+        n = M.PHASE5_MAX_RETURNS_TO_GPS
+        r = self._run(["NEAR_GOAL"] * (n + 1), [M.PHASE5_RETURN_GPS] * n + [False])
+        self.assertIs(r, False)
+        self.assertEqual(len(self.p4_calls), n + 1)
+        self.assertEqual([c[1] for c in self.p5_calls], [True] * n + [False],
+                         "上限に達したら最後の Phase5 は GPS に戻らない")
+
+    def test_phase4_timeout_after_return(self):
+        r = self._run(["NEAR_GOAL", "TIMEOUT"], [M.PHASE5_RETURN_GPS])
+        self.assertIsNone(r)
+        self.assertEqual(len(self.p5_calls), 1)
+
+
+class TestCameraConfig(unittest.TestCase):
+    def test_camera_mounted_upside_down(self):
+        self.assertTrue(M.CAM_ROTATE_180)
+        self.assertTrue(M.make_camera().rotate180)
 
 
 if __name__ == "__main__":

@@ -93,7 +93,7 @@ def planned_action(det, sonar_m, lost):
     if not det.detected:
         if lost <= M.CAM_LOST_HOLD_FRAMES:
             return f"撮り直し(見失い{lost})", False
-        return f"探索旋回 {M.CAM_SEARCH_TURN_SEC:.2f}s", False
+        return f"探索旋回 {M.CAM_SEARCH_TURN_SEC:.2f}s (1周で無ければ→Phase4)", False
     centered = abs(det.offset) <= M.CAM_CENTER_TOL
     sonar_close = sonar_m is not None and sonar_m <= M.GOAL_CHECK_TRIGGER_DIST_M
     if det.is_contact or (centered and sonar_close) or (centered and det.is_near and sonar_m is None):
@@ -118,8 +118,8 @@ def apply_overrides(args):
         M.CAM_SHAPE_MIN_SCORE = 0.0
     if args.backend:
         M.CAM_BACKEND = args.backend
-    if args.rotate180:
-        M.CAM_ROTATE_180 = True
+    if args.no_rotate:
+        M.CAM_ROTATE_180 = False
     if args.swap_rb:
         M.CAM_SWAP_RB = True
     if args.hue:
@@ -164,6 +164,7 @@ def run_detect(args):
           f"形状判定: {'なし' if M.CAM_SHAPE_MIN_SCORE <= 0 else f'>= {M.CAM_SHAPE_MIN_SCORE}'}")
     M.log(f"  色: H={M.CAM_HUE_RANGES}  近距離: 面積>={M.CAM_NEAR_AREA_RATIO}  "
           f"接触: 面積>={M.CAM_CONTACT_AREA_RATIO}  正面: |ずれ|<={M.CAM_CENTER_TOL}")
+    M.log(f"  カメラ画像の180°回転: {'あり (上下逆の取り付け)' if M.CAM_ROTATE_180 else 'なし'}")
     M.log(f"  距離推定に使うゴールの高さ: {args.target_height:.2f} m  "
           f"(コーン以外で試すときは --target-height で実物の高さを指定)")
     if not camera.start():
@@ -305,6 +306,16 @@ def run_drive(args):
     led.on()
     sonar = M.SonarSensor()
     motor = M.MotorController()
+    bno = None
+    if not args.no_bno:
+        try:
+            b = M.BNO055()
+            if b.setUp(operation_mode=M.BNO055.OPERATION_MODE_NDOF):
+                M.set_bno_orientation(b, M.BNO_ORIENTATION)
+                bno = b
+        except Exception as e:
+            M.log(f"BNO055 を初期化できません ({e})", "WARN")
+    M.log(f"探索の1周判定: {'BNO055 の地磁気で 360°' if bno else f'旋回 {M.CAM_SEARCH_PULSES_PER_LAP} 回 (BNO055 なし)'}")
     M.LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = M.LOG_DIR / f"phase5_test_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     start = time.time()
@@ -313,7 +324,7 @@ def run_drive(args):
         for i in range(3, 0, -1):
             M.log(f"{i} 秒後に Phase5 を開始します...")
             time.sleep(1.0)
-        reached = M.phase5_camera_approach(sonar, motor, led, start)
+        reached = M.phase5_camera_approach(sonar, motor, led, start, bno=bno)
     except KeyboardInterrupt:
         M.log("Ctrl+C を受信しました。緊急停止します。")
     finally:
@@ -323,7 +334,11 @@ def run_drive(args):
         led.off()
         led.close()
         M.save_log(log_path)
-    M.log(f"[Phase5 テスト] 結果: {'0m 到達 (超音波で確認済み)' if reached is True else '未到達'}")
+    if reached == M.PHASE5_RETURN_GPS:
+        M.log("[Phase5 テスト] 結果: 1周してもゴールが見つからず、少し移動しました。"
+              "本番ならここで Phase4 (GPS 誘導) に戻ります")
+    else:
+        M.log(f"[Phase5 テスト] 結果: {'0m 到達 (超音波で確認済み)' if reached is True else '未到達'}")
     return 0
 
 
@@ -340,11 +355,15 @@ def main():
     ap.add_argument("--blink-sec", type=float, default=2.0,
                     help="--drive 時のフェーズ開始 LED 点滅秒数 (既定 2 秒に短縮)")
     ap.add_argument("--no-sonar", action="store_true", help="超音波センサを使わない (検知モードのみ)")
+    ap.add_argument("--no-bno", action="store_true",
+                    help="(--drive) BNO055 を使わず、旋回回数で探索の1周を判定する")
     ap.add_argument("--no-shape", action="store_true",
                     help="形状判定を切る (コーン以外の赤い物で試すとき)")
     ap.add_argument("--backend", choices=("auto", "cv2", "numpy"), help="色検知バックエンド")
     ap.add_argument("--hue", help="色相の範囲を上書き 例: 0-12,165-179 (OpenCV の H=0〜179)")
-    ap.add_argument("--rotate180", action="store_true", help="カメラが上下逆に付いている")
+    ap.add_argument("--no-rotate", action="store_true",
+                    help="画像を180°回転しない (カメラを機体から外して正立で持って試すとき。"
+                         "既定は機体に上下逆に付けた状態に合わせて180°回転)")
     ap.add_argument("--swap-rb", action="store_true", help="赤と青が入れ替わって写る")
     ap.add_argument("--target-height", type=float, default=0.70,
                     help="距離推定に使うゴールの高さ [m] (既定 0.70 = カラーコーン)")
