@@ -100,17 +100,23 @@ NSE2026/main/main.py
                 目標まで PHASE4_TO_5_RADIUS 以内に入ったら Phase4 を終了し
                 Phase5 へ移行する (タイムアウト時はそのままミッション終了)。
 
-    Phase 5 : 超音波センサによる最終接近 (★変更: 左右スキャン方式)
-                GPS 精度ではこれ以上距離を詰められないため、前方の超音波
-                センサでゴールに設置された物体との距離を直接測定しながら
-                近づく。★変更: 従来は距離を判断に使わず機械的に左右へ
-                振っていたが、これを「左に旋回して距離測定 → 右に旋回して
-                距離測定 → 近かった方向へ向き直しながら前進」という、
-                超音波センサの値に基づいて能動的に対象物へ機体を向けていく
-                方式に変更した (FINAL_SCAN_SEC ごとに1サイクル)。
-                前方オブジェクトとの距離が FINAL_STOP_DIST_M (0.05 m) 以下
-                になったら「0距離到達」とみなしてモータを停止し、ミッション
-                完了とする。FINAL_APPROACH_TIMEOUT_SEC で安全タイムアウト。
+    Phase 5 : カメラ色検知による最終接近 + 超音波による 0m 到達確認 (★変更)
+                Raspberry Pi Camera Module v2 でゴール色 (既定: 赤) を検知し、
+                「停止 → 撮影 → 判断 → 短いパルスで旋回/前進」を繰り返す
+                stop-and-go 方式でゴールへ近づく (sensor/goal_vision.py)。
+                  * 見えない間 : その場で小刻みに旋回して探索 (最後に見えた側へ)。
+                                 1周しても見つからなければ少し前進して視点を変える
+                  * 見えている : 重心 x のずれに比例した旋回 → 中央なら前進
+                  * 近距離     : カメラで大きく写る or 超音波が近い → 停止して
+                                 超音波を複数回測り、中央値が GOAL_SONAR_DIST_M
+                                 以内 & カメラも近距離 → 最後に押し込んで接触
+                                 → 押し込み後にも超音波で再検証して完了
+                  * 至近で超音波が測れない (不感帯) 場合は少し後退して測り直し、
+                    目の前にゴールがあることを確認してから押し込む
+                0m 到達は「超音波で確認できたとき」だけ成功とする。
+                カメラが使えない場合は従来の超音波左右スキャン方式
+                (phase5_sonar_fallback) に自動で切り替える。
+                FINAL_APPROACH_TIMEOUT_SEC で安全タイムアウト。
 
     共通 : フェーズが切り替わるたびに LED を LED_BLINK_SEC 秒間点滅させ、
            現在どのフェーズに移行したかを外から視認できるようにする。
@@ -130,6 +136,7 @@ NSE2026/main/main.py
     micropyGPS (/dev/serial0, 9600) ← test_GPSrun.py と統一
     HC-SR04  (TRIG=BCM8, ECHO=BCM7) ← sensor/HC-SR04.py と統一
     LED      (BCM21)        ← test_onoff.py と統一
+    Camera   (Pi Camera Module v2 / IMX219, Picamera2) ← sensor/goal_vision.py
 """
 
 import sys
@@ -164,6 +171,8 @@ if str(_SENSOR_DIR) not in sys.path:
 from BNO055 import BNO055
 from BMP180 import BMP180
 from micropyGPS import MicropyGPS
+# ★追加: カメラ色検知によるゴール検知 + 超音波によるゴール確認 (numpy のみ, OpenCV 不要)
+import goal_vision as gv
 
 # ===========================================================================
 # グローバル共有変数 (★変更: 全体コードの最上部に配置)
@@ -214,7 +223,7 @@ PHASE_NAMES = {
     2: "初期後退・停止・前進",
     3: "キャリブレーション/GPS安定化",
     4: "GPS誘導走行",
-    5: "超音波最終接近",
+    5: "カメラ最終接近",
 }
 
 # センサ別のデータ取得状況トラッキング ──────────────────────────
@@ -442,6 +451,71 @@ FINAL_APPROACH_TIMEOUT_SEC = 5 * 60  # [s]  Phase5 の安全タイムアウト (
 FINAL_NAV_REPORT_INTERVAL_SEC = 3.0  # [s]  距離・方位ずれのまとめログ周期
 FINAL_SONAR_LOST_WARN_SEC = 15.0     # [s]  超音波が有効値を返さない状態がこの秒数続いたら警告
 FINAL_SCAN_LOOP_DT      = 0.02  # [s]  スキャン中の超音波サンプリング周期
+# ※ 上記 FINAL_STOP_DIST_M / FINAL_SCAN_* は、カメラが使えないときの
+#   フォールバック (phase5_sonar_fallback) でのみ使う。
+
+# --- Phase 5: カメラ色検知による最終接近 (★追加) -----------------------------
+# 参考: YutakaOkutani/cansat-system (lib/cone_detect.py, mission/goal.py, phases/p6.py)
+#       FROM-THE-EARTH/F.T.E.15th (NSE2025/Re-Star-t/library/detect_corn.py, main.py)
+# カメラ設定
+CAM_SIZE            = (320, 240)  # [px]  処理解像度 (小さいほど速く省メモリ)
+CAM_FULL_FOV        = True        # True: IMX219 の全画角モード (1640x1232 ビニング) を使う
+CAM_ROTATE_180      = False       # カメラを上下逆に取り付けた場合 True
+CAM_SWAP_RB         = False       # 赤と青が入れ替わって見える場合 True
+CAM_WARMUP_SEC      = 1.5         # [s]  起動後の AE/AWB 収束待ち
+CAM_FAIL_LIMIT      = 10          # [回] 連続撮影失敗がこれを超えたら超音波フォールバックへ
+# 色検知 (既定は赤いカラーコーン。OpenCV と同じ H=0〜179 スケール)
+CAM_HUE_RANGES      = ((0, 12), (165, 179))
+CAM_S_MIN           = 100         # 彩度の基準下限 (画面の明るさに応じて自動で上下する)
+CAM_V_MIN           = 70          # 明度の基準下限
+CAM_RED_MARGIN      = 30          # R - max(G,B) の下限。赤以外のゴール色にするときは None
+CAM_RED_MAX_GB_RATIO = 0.55       # max(G,B) <= これ×R (茶色い土の除外)。赤以外のゴール色なら None
+CAM_MIN_AREA_RATIO  = 0.0015      # これ未満の色領域はノイズとして無視 (320x240 で約115px)
+CAM_NEAR_AREA_RATIO = 0.20        # これ以上写ったら近距離 → 超音波で確認に入る
+CAM_CONTACT_AREA_RATIO = 0.55     # これ以上写ったら接触寸前
+CAM_BACKEND         = "auto"      # "auto": OpenCV があれば OpenCV 版 (形状評価あり)、無ければ numpy 版
+CAM_SHAPE_MIN_SCORE = 0.25        # [0〜1] (OpenCV 版のみ) これ未満のコーンらしくない赤は無視。
+                                  #        本物のコーンを見落とすようなら下げる (0 で形状判定なし)
+# 操舵 (stop-and-go: 1 パルス動いて止まって撮影、を繰り返す)
+CAM_SETTLE_SEC      = 0.15        # [s]  停止してから撮影までの待ち (ブレ・揺れ防止)
+CAM_CENTER_TOL      = 0.10        # [-]  重心 x のずれ (±0.5) がこれ以内なら正面とみなす
+CAM_TURN_MIN_SEC    = 0.08        # [s]  旋回パルスの最短
+CAM_TURN_GAIN_SEC   = 0.6         # [s]  ずれ 1.0 あたりの旋回パルス長 (比例)
+CAM_TURN_MAX_SEC    = 0.30        # [s]  旋回パルスの最長
+CAM_FWD_FAR_SEC     = 0.8         # [s]  遠い時の前進パルス
+CAM_FWD_NEAR_SEC    = 0.25        # [s]  近い時の前進パルス
+# 探索 (見失ったとき)
+CAM_LOST_HOLD_FRAMES   = 2        # [枚] これ以下の見失いは撮り直すだけ (一瞬の誤検知落ち対策)
+CAM_SEARCH_TURN_SEC    = 0.25     # [s]  探索時の 1 回の旋回パルス (画角 62° の半分程度回る長さに調整)
+CAM_SEARCH_PULSES_PER_LAP = 24    # [回] 約1周に相当するパルス数 (実機で要調整)
+CAM_SEARCH_REPOSITION_SEC = 2.0   # [s]  1周しても見つからない時に前進して視点を変える
+CAM_SEARCH_MAX_LAPS    = 6        # [周] これだけ探しても見つからなければ超音波フォールバックへ
+# 障害物 (超音波は近いがカメラ上のゴールは小さい)
+CAM_OBSTACLE_TURN_SEC  = 0.6      # [s]  回避の旋回
+CAM_OBSTACLE_FWD_SEC   = 1.0      # [s]  回避の前進
+# 記録
+CAM_SAVE_INTERVAL_SEC  = 5.0      # [s]  この間隔で撮影画像を logs/cam_*/ に保存 (0 で無効)
+CAM_SAVE_MAX           = 150      # [枚] 保存枚数の上限 (SD カード容量対策)
+CAM_REPORT_INTERVAL_SEC = 3.0     # [s]  まとめログの周期
+
+# --- Phase 5: 超音波による 0m 到達確認 (★追加) ------------------------------
+# cansat-system mission/goal.py と同じく「停止した状態で」複数回測り、中央値と
+# ばらつきで判定する (走行中の 1 回の値では判定しない)。
+GOAL_CHECK_TRIGGER_DIST_M = 0.40  # [m]  走行中の超音波がこれ以下 & 正面にゴール → 停止して確認
+GOAL_SONAR_DIST_M      = 0.08     # [m]  中央値がこれ以下 → 0m 直前 (★超音波の取り付け位置に合わせて調整)
+GOAL_SONAR_SAMPLES     = 5        # [回] 確認時に測る回数
+GOAL_SONAR_MIN_VALID   = 3        # [回] 有効値がこれ未満なら判定しない
+GOAL_SONAR_MAX_SPREAD_M = 0.05    # [m]  有効値の max-min がこれを超えたら不安定とみなす
+GOAL_SONAR_INTERVAL_SEC = 0.06    # [s]  HC-SR04 の測定間隔 (残響を避けるため 60ms 以上)
+GOAL_SETTLE_SEC        = 0.3      # [s]  確認前の静止待ち
+GOAL_BACKOFF_SEC       = 0.25     # [s]  不感帯対策の後退パルス
+GOAL_BACKOFF_CONFIRM_DIST_M = 0.20  # [m]  後退して測り直したときにこれ以下なら目の前にゴールあり
+GOAL_FINAL_PUSH_SEC    = 0.30     # [s]  確認後に接触させるための最終前進 (0 で押し込まない)
+GOAL_PUSH_TOLERANCE_M  = 0.05     # [m]  押し込み後に GOAL_SONAR_DIST_M + これ を超えたら失敗
+GOAL_MAX_BLIND_RETRIES = 4        # [回] 不感帯→後退確認の失敗がこれを超えたら少し下がって再接近
+GOAL_MAX_CONTACT_FAR   = 5        # [回] 「カメラは接触寸前なのに超音波は遠い」がこれだけ続いたら
+                                  #      カメラと超音波が別の物を見ているとみなし、下がって再接近
+GOAL_REAPPROACH_BACK_SEC = 1.0    # [s]  再接近のために下がる時間
 
 # --- モータ: ソフトスタート (デューティ比の段階的引き上げ) (★追加) ---------
 # 停止状態から動き出す瞬間にいきなり高いデューティ比をかけると、
@@ -1896,11 +1970,20 @@ def phase4_guided_run(bno: BNO055, sonar: SonarSensor,
         return "ABORT"
 
 
-# ─── Phase 5: 超音波センサによる最終接近 (★変更: 左右スキャン方式) ───────────
+# ─── Phase 5 フォールバック: 超音波センサによる最終接近 (左右スキャン方式) ────
+# ★変更: Phase5 の主役はカメラ (phase5_camera_approach) になった。この関数は
+#        カメラが初期化できない/撮影が続けて失敗する/長時間ゴールが見つからない
+#        ときの予備として残している (中身は従来の main2.py の Phase5 のまま)。
 
-def phase5_final_approach(sonar: SonarSensor, motor: MotorController,
-                          led: LED, start_time: float) -> bool:
+def phase5_sonar_fallback(sonar: SonarSensor, motor: MotorController,
+                          led: LED, start_time: float, blink: bool = True,
+                          timeout_sec: float = None) -> bool:
     """
+    ★変更: 旧 phase5_final_approach。カメラが使えない場合のフォールバック。
+    blink=False ならフェーズ切り替えの LED 点滅を省略する (カメラ方式から
+    切り替わった場合、既に点滅済みのため)。timeout_sec を渡すとその秒数で
+    打ち切る (残り時間だけ実行するため)。
+
     Phase4 で目標まで PHASE4_TO_5_RADIUS 以内に入った後の最終接近フェーズ。
 
     GPS はこれ以上の精度で距離を詰められないため、前方の超音波センサで
@@ -1939,12 +2022,15 @@ def phase5_final_approach(sonar: SonarSensor, motor: MotorController,
     """
     global phase, g_sonar_m
     phase = 5
-    blink_led(led)
+    if blink:
+        blink_led(led)
+    if timeout_sec is None:
+        timeout_sec = FINAL_APPROACH_TIMEOUT_SEC
     log("─" * 62)
-    log("[Phase5] 超音波センサによる左右スキャン接近を開始します")
+    log("[Phase5] (フォールバック) 超音波センサによる左右スキャン接近を開始します")
     log(f"  停止距離: {FINAL_STOP_DIST_M:.2f} m 以下で到達  "
         f"スキャン: 左右それぞれ {FINAL_SCAN_SEC:.1f} s  "
-        f"タイムアウト: {FINAL_APPROACH_TIMEOUT_SEC:.0f} s")
+        f"タイムアウト: {timeout_sec:.0f} s")
     log_data_status("Phase5開始時点")
 
     HDR = (f"{'T[s]':>7}  {'Lat':>11}  {'Lng':>12}  "
@@ -2010,8 +2096,8 @@ def phase5_final_approach(sonar: SonarSensor, motor: MotorController,
             now = time.time()
             elapsed = now - p5_start
 
-            if elapsed > FINAL_APPROACH_TIMEOUT_SEC:
-                log(f"[Phase5] タイムアウト ({FINAL_APPROACH_TIMEOUT_SEC:.0f} s)", "WARN")
+            if elapsed > timeout_sec:
+                log(f"[Phase5] タイムアウト ({timeout_sec:.0f} s)", "WARN")
                 timed_out = True
                 break
 
@@ -2105,6 +2191,359 @@ def phase5_final_approach(sonar: SonarSensor, motor: MotorController,
     return reached
 
 
+# ─── Phase 5: カメラ色検知による最終接近 + 超音波による 0m 到達確認 (★追加) ────
+
+def make_goal_detector(backend: str = None) -> "gv.ColorGoalDetector":
+    """設定値セクションの CAM_* から色検知器を作る。"""
+    return gv.ColorGoalDetector(
+        hue_ranges=CAM_HUE_RANGES, s_min=CAM_S_MIN, v_min=CAM_V_MIN,
+        red_margin=CAM_RED_MARGIN, red_max_gb_ratio=CAM_RED_MAX_GB_RATIO,
+        work_width=CAM_SIZE[0],
+        min_area_ratio=CAM_MIN_AREA_RATIO, near_area_ratio=CAM_NEAR_AREA_RATIO,
+        contact_area_ratio=CAM_CONTACT_AREA_RATIO,
+        backend=backend or CAM_BACKEND, shape_min_score=CAM_SHAPE_MIN_SCORE)
+
+
+def make_goal_check_config() -> "gv.GoalCheckConfig":
+    """設定値セクションの GOAL_* から超音波ゴール確認の閾値をまとめる。"""
+    return gv.GoalCheckConfig(
+        goal_dist_m=GOAL_SONAR_DIST_M, min_valid=GOAL_SONAR_MIN_VALID,
+        max_spread_m=GOAL_SONAR_MAX_SPREAD_M,
+        backoff_confirm_dist_m=GOAL_BACKOFF_CONFIRM_DIST_M,
+        push_tolerance_m=GOAL_PUSH_TOLERANCE_M)
+
+
+def make_camera() -> "gv.PiCameraCapture":
+    return gv.PiCameraCapture(size=CAM_SIZE, full_fov=CAM_FULL_FOV,
+                              rotate180=CAM_ROTATE_180, swap_rb=CAM_SWAP_RB,
+                              warmup_sec=CAM_WARMUP_SEC, log=log)
+
+
+def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
+                           led: LED, start_time: float,
+                           camera=None, detector=None) -> bool:
+    """
+    ★追加: カメラ色検知を主に使う最終接近フェーズ。
+
+    参考にした手法:
+      * F.T.E.15th (NSE2025): 赤領域の重心 x で左右旋回/前進、見失ったら
+        その場旋回で探索、画面に大きく写ったら到達
+      * cansat-system: 明るさ適応の HSV 閾値、近距離では停止した状態で
+        超音波を複数回測って中央値・ばらつきで 0m を判定、短いパルス前進
+
+    1 ループ = 「停止 → 撮影・検知 → 1 パルスだけ動く」(stop-and-go)。
+      ・ゴールが見えない : 最後に見えた側へ小刻みに旋回して探索。
+                          約1周しても見えなければ少し前進して視点を変える。
+      ・ゴールが見える   : 重心のずれに比例して旋回、正面なら前進。
+      ・近距離           : カメラで接触寸前 or 正面 & 超音波が近い → confirm_goal()
+          1. 停止して超音波 GOAL_SONAR_SAMPLES 回 + カメラ 1 枚を取り直し、
+             gv.judge_goal() で判定
+          2. CONFIRMED → GOAL_FINAL_PUSH_SEC だけ押し込んで接触
+             BLIND (カメラは接触寸前なのに超音波が測れない = 不感帯の疑い)
+                   → GOAL_BACKOFF_SEC 後退して測り直し、目の前にゴールが
+                     あると超音波で確認できたら、後退分 + 押し込み分前進
+          3. 押し込み後にもう一度超音波 + カメラで gv.judge_after_push()
+             → OK なら 0m 到達 (ミッション完了)
+    0m 到達を True とするのは、超音波でゴールを確認できたときだけ。
+
+    カメラが初期化できない・撮影が CAM_FAIL_LIMIT 回続けて失敗する・
+    CAM_SEARCH_MAX_LAPS 周探しても見つからない場合は、残り時間で
+    従来の超音波左右スキャン (phase5_sonar_fallback) に切り替える。
+
+    camera / detector はテスト用の差し替え口 (None なら実機用を生成)。
+    戻り値: True = 0m 到達 (超音波で確認済み), False = 未到達
+    """
+    global phase, g_sonar_m
+    phase = 5
+    blink_led(led)
+    log("─" * 62)
+    log("[Phase5] カメラ色検知による最終接近を開始します (0m 到達は超音波で確認)")
+    log(f"  色: H={CAM_HUE_RANGES} S>={CAM_S_MIN} V>={CAM_V_MIN} (明るさで自動調整) "
+        f"R-max(G,B)>={CAM_RED_MARGIN}")
+    log(f"  近距離: 面積>={CAM_NEAR_AREA_RATIO:.2f} or 超音波<={GOAL_CHECK_TRIGGER_DIST_M:.2f}m  "
+        f"ゴール: 超音波中央値<={GOAL_SONAR_DIST_M:.3f}m ({GOAL_SONAR_MIN_VALID}/{GOAL_SONAR_SAMPLES}回以上有効)")
+    log(f"  タイムアウト: {FINAL_APPROACH_TIMEOUT_SEC:.0f} s")
+    log_data_status("Phase5開始時点")
+
+    if detector is None:
+        try:
+            detector = make_goal_detector()
+        except Exception as e:      # CAM_BACKEND="cv2" 指定で OpenCV が無い場合など
+            log(f"[Phase5][WARN] 検知器の初期化に失敗 ({e}) → numpy 版で続行します", "WARN")
+            detector = make_goal_detector(backend="numpy")
+    log(f"  色検知バックエンド: {detector.backend}"
+        + (" (形状評価あり)" if detector.backend == "cv2" else " (OpenCV なし: 形状評価なし)"))
+    cfg = make_goal_check_config()
+    if camera is None:
+        camera = make_camera()
+
+    p5_start = time.time()
+
+    def remaining() -> float:
+        return FINAL_APPROACH_TIMEOUT_SEC - (time.time() - p5_start)
+
+    if not camera.start():
+        log("[Phase5][WARN] カメラを初期化できません → 超音波スキャン方式に切り替えます", "WARN")
+        camera.close()
+        return phase5_sonar_fallback(sonar, motor, led, start_time, blink=False,
+                                     timeout_sec=max(1.0, remaining()))
+
+    # ── 撮影画像の保存先 (後で検知の様子を確認するため) ──
+    img_dir = LOG_DIR / f"cam_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    saved = {"n": 0, "last": 0.0}
+
+    def save_frame(rgb, det, tag: str, force: bool = False):
+        if rgb is None or saved["n"] >= CAM_SAVE_MAX:
+            return
+        now = time.time()
+        if not force and (CAM_SAVE_INTERVAL_SEC <= 0 or now - saved["last"] < CAM_SAVE_INTERVAL_SEC):
+            return
+        try:
+            img_dir.mkdir(parents=True, exist_ok=True)
+            path = img_dir / f"{saved['n']:03d}_{now - p5_start:06.1f}s_{tag}.jpg"
+            gv.save_rgb_jpeg(rgb, path, det)
+            saved["n"] += 1
+            saved["last"] = now
+        except Exception as e:
+            log(f"[Phase5][WARN] 画像保存失敗: {e}", "WARN")
+
+    # ── 補助関数 ──
+    def pulse(action: str, sec: float, note: str = ""):
+        """1 パルスだけ動いて止まる。"""
+        if action == "NONE" or sec <= 0:
+            return
+        cmd = {"LEFT": motor.turn_left_strong, "RIGHT": motor.turn_right_strong,
+               "FORWARD": motor.forward, "BACKWARD": motor.backward}[action]
+        cmd()
+        log_sensor_row(time.time() - start_time, f"P5_{action}", f"{note} pulse={sec:.2f}s")
+        time.sleep(sec)
+        motor.stop()
+
+    def observe(discard: int = 1):
+        """停止状態で 1 枚撮影して検知する。戻り値 (rgb, det)。撮影失敗なら (None, None)。"""
+        time.sleep(CAM_SETTLE_SEC)
+        rgb = camera.capture_rgb(discard=discard)
+        if rgb is None:
+            return None, None
+        return rgb, detector.detect(rgb)
+
+    def sample_sonar(n: int) -> "gv.SonarSummary":
+        global g_sonar_m
+        vals = []
+        for i in range(n):
+            vals.append(sonar.get_distance_m())
+            if i < n - 1:
+                time.sleep(GOAL_SONAR_INTERVAL_SEC)
+        g_sonar_m = vals[-1] if vals else None
+        return gv.summarize_sonar(vals)
+
+    blind_failures = 0
+    goal_reason = ""
+
+    def confirm_goal() -> str:
+        """
+        停止して超音波 + カメラで 0m 到達を確認する。
+        戻り値: "GOAL" / "FAR" / "OBSTACLE" / "NO_VISUAL" / "SONAR_INVALID" /
+                "NOISY" / "BLIND_FAIL" / "PUSH_FAIL" / "CAMERA_FAIL"
+        """
+        nonlocal blind_failures, goal_reason
+        motor.stop()
+        time.sleep(GOAL_SETTLE_SEC)
+        son = sample_sonar(GOAL_SONAR_SAMPLES)
+        rgb, det = observe()
+        if det is None:
+            return "CAMERA_FAIL"
+        status, reason = gv.judge_goal(son, det, cfg)
+        log(f"[Phase5][GOAL確認] {status}: {reason} | {son.summary()} | {det.summary()}")
+        log_sensor_row(time.time() - start_time, "P5_GOAL_CHECK", f"{status} {son.summary()}")
+        save_frame(rgb, det, f"check_{status}", force=True)
+
+        if status == "CONFIRMED":
+            push_sec = GOAL_FINAL_PUSH_SEC
+        elif status == "BLIND":
+            # 至近距離で超音波が測れない → 少し下がって「目の前にゴールがあるか」を測り直す
+            pulse("BACKWARD", GOAL_BACKOFF_SEC, "不感帯対策の後退")
+            time.sleep(GOAL_SETTLE_SEC)
+            son_b = sample_sonar(GOAL_SONAR_SAMPLES)
+            rgb_b, det_b = observe()
+            if det_b is None:
+                return "CAMERA_FAIL"
+            ok, reason_b = gv.judge_backoff(son_b, det_b, cfg)
+            log(f"[Phase5][GOAL確認] 後退して再測定: {'OK' if ok else 'NG'}: {reason_b} | "
+                f"{son_b.summary()} | {det_b.summary()}")
+            save_frame(rgb_b, det_b, f"backoff_{'ok' if ok else 'ng'}", force=True)
+            if not ok:
+                blind_failures += 1
+                return "BLIND_FAIL"
+            push_sec = GOAL_BACKOFF_SEC + GOAL_FINAL_PUSH_SEC   # 下がった分 + 押し込み分
+        else:
+            return status
+
+        # ── 最終押し込み (接触) → 押し込み後にもう一度確認 ──
+        if push_sec > 0:
+            pulse("FORWARD", push_sec, "最終押し込み")
+        time.sleep(GOAL_SETTLE_SEC)
+        son_p = sample_sonar(GOAL_SONAR_SAMPLES)
+        rgb_p, det_p = observe()
+        if det_p is None:
+            det_p = gv.GoalDetection()   # カメラが撮れなくても超音波だけで判定できるようにする
+        ok, reason_p = gv.judge_after_push(son_p, det_p, cfg)
+        log(f"[Phase5][GOAL確認] 押し込み後の検証: {'OK' if ok else 'NG'}: {reason_p} | "
+            f"{son_p.summary()} | {det_p.summary()}")
+        save_frame(rgb_p, det_p, f"after_push_{'ok' if ok else 'ng'}", force=True)
+        if ok:
+            goal_reason = f"{reason} / {reason_p}"
+            return "GOAL"
+        return "PUSH_FAIL"
+
+    def avoid_obstacle():
+        """ゴール以外の障害物が正面にある: 旋回してから (前が空いていれば) 前進。"""
+        log("[Phase5] 正面の障害物を回避します (旋回 → 前進)")
+        pulse("RIGHT", CAM_OBSTACLE_TURN_SEC, "障害物回避の旋回")
+        d = sonar.get_distance_m()
+        if d is None or d > STUCK_SONAR_DIST_THRESH:
+            pulse("FORWARD", CAM_OBSTACLE_FWD_SEC, "障害物回避の前進")
+
+    HDR = (f"{'T[s]':>7}  {'Det':>3}  {'Area':>6}  {'cx':>5}  {'Sonar[m]':>8}  "
+           f"{'State':>8}  {'Action':>16}")
+    print()
+    print("-" * len(HDR))
+    print(HDR)
+    print("-" * len(HDR))
+
+    reached = timed_out = aborted = fallback = False
+    fallback_reason = ""
+    contact_far = 0      # 「カメラ接触寸前 & 超音波は遠い」の連続回数
+    lost = 0
+    search_pulses = 0
+    laps = 0
+    last_side = "RIGHT"
+    cam_fail = 0
+    last_report = p5_start
+
+    try:
+        while True:
+            if remaining() <= 0:
+                log(f"[Phase5] タイムアウト ({FINAL_APPROACH_TIMEOUT_SEC:.0f} s)", "WARN")
+                timed_out = True
+                break
+
+            rgb, det = observe()
+            if det is None:
+                cam_fail += 1
+                log(f"[Phase5][WARN] 撮影失敗 ({cam_fail}/{CAM_FAIL_LIMIT})", "WARN")
+                if cam_fail >= CAM_FAIL_LIMIT:
+                    fallback, fallback_reason = True, "撮影が続けて失敗"
+                    break
+                time.sleep(0.2)
+                continue
+            cam_fail = 0
+
+            g_sonar_m = sonar.get_distance_m()   # 走行判断の目安 (0m の判定には使わない)
+            sonar_str = f"{g_sonar_m:.3f}" if g_sonar_m is not None else "---"
+            state = "TRACK" if det.detected else "SEARCH"
+            action_str = ""
+            save_frame(rgb, det, state.lower())
+
+            if det.detected:
+                lost = 0
+                search_pulses = 0
+                laps = 0
+                last_side = "RIGHT" if det.offset > 0 else "LEFT"
+                centered = abs(det.offset) <= CAM_CENTER_TOL
+                sonar_close = g_sonar_m is not None and g_sonar_m <= GOAL_CHECK_TRIGGER_DIST_M
+                need_check = (det.is_contact
+                              or (centered and sonar_close)
+                              or (centered and det.is_near and g_sonar_m is None))
+                status = None
+                if need_check:
+                    status = confirm_goal()
+                    action_str = f"CHECK:{status}"
+                    if status == "GOAL":
+                        reached = True
+                        break
+                    contact_far = contact_far + 1 if (status == "FAR" and det.is_contact) else 0
+                    if status == "OBSTACLE":
+                        avoid_obstacle()
+                    elif status == "BLIND_FAIL" and blind_failures > GOAL_MAX_BLIND_RETRIES:
+                        log("[Phase5] 不感帯の確認に何度も失敗 → 少し下がって再接近します", "WARN")
+                        pulse("BACKWARD", GOAL_REAPPROACH_BACK_SEC, "再接近のための後退")
+                        blind_failures = 0
+                    elif contact_far >= GOAL_MAX_CONTACT_FAR:
+                        log("[Phase5] カメラは接触寸前なのに超音波は遠いままです "
+                            "(超音波がゴールを捉えていない可能性) → 下がって再接近します", "WARN")
+                        pulse("BACKWARD", GOAL_REAPPROACH_BACK_SEC, "再接近のための後退")
+                        contact_far = 0
+                        status = "REAPPROACH"
+                if status is None or status in ("FAR", "SONAR_INVALID", "NOISY"):
+                    action, sec = gv.decide_steer(
+                        det, center_tol=CAM_CENTER_TOL,
+                        turn_min_sec=CAM_TURN_MIN_SEC, turn_gain_sec=CAM_TURN_GAIN_SEC,
+                        turn_max_sec=CAM_TURN_MAX_SEC,
+                        fwd_far_sec=CAM_FWD_FAR_SEC, fwd_near_sec=CAM_FWD_NEAR_SEC)
+                    if action == "FORWARD" and (sonar_close or status is not None):
+                        sec = CAM_FWD_NEAR_SEC     # ゴール手前は慎重に
+                    pulse(action, sec, f"追尾 cx={det.cx:.2f} area={det.area_ratio:.3f}")
+                    action_str = (action_str + " " if action_str else "") + f"{action}:{sec:.2f}s"
+            else:
+                lost += 1
+                if lost <= CAM_LOST_HOLD_FRAMES:
+                    action_str = f"HOLD({lost})"
+                else:
+                    pulse(last_side, CAM_SEARCH_TURN_SEC, "探索旋回")
+                    search_pulses += 1
+                    action_str = f"SEARCH_{last_side}({search_pulses}/{CAM_SEARCH_PULSES_PER_LAP})"
+                    if search_pulses >= CAM_SEARCH_PULSES_PER_LAP:
+                        search_pulses = 0
+                        laps += 1
+                        log(f"[Phase5] 約1周探索してもゴールが見えません ({laps}/{CAM_SEARCH_MAX_LAPS})", "WARN")
+                        if laps >= CAM_SEARCH_MAX_LAPS:
+                            fallback, fallback_reason = True, f"{laps}周探索しても見つからない"
+                            break
+                        d = sonar.get_distance_m()
+                        if d is None or d > STUCK_SONAR_DIST_THRESH:
+                            pulse("FORWARD", CAM_SEARCH_REPOSITION_SEC, "視点を変えるための前進")
+                        else:
+                            pulse("RIGHT", CAM_OBSTACLE_TURN_SEC, "前方が塞がっているため旋回")
+
+            print(f"{time.time() - p5_start:>7.2f}  {int(det.detected):>3d}  {det.area_ratio:>6.3f}  "
+                  f"{det.cx:>5.2f}  {sonar_str:>8}  {state:>8}  {action_str:>16}", flush=True)
+            log_sensor_row(time.time() - start_time, f"P5_{state}",
+                           f"{det.summary()} sonar={sonar_str} act={action_str}")
+
+            if time.time() - last_report >= CAM_REPORT_INTERVAL_SEC:
+                last_report = time.time()
+                dist_gps = calc_distance(g_gps_lat, g_gps_lng) if g_gps_valid else float("nan")
+                log(f"[Phase5] state={state} {det.summary()} sonar={sonar_str}m "
+                    f"GPS距離(参考)={dist_gps:.1f}m 残り={remaining():.0f}s")
+                log_data_status("カメラ最終接近 (カメラ=操舵, 超音波=0m確認)")
+
+    except KeyboardInterrupt:
+        log("[Phase5] Ctrl+C 受信 → 緊急停止")
+        aborted = True
+
+    finally:
+        motor.stop()
+        camera.close()       # フォールバックに入る前にカメラのメモリを解放する
+        print()
+        log("─" * 62)
+        if reached:
+            log(f"[Phase5] 結果: 0m 到達 (超音波で確認済み) — {goal_reason}")
+        elif timed_out:
+            log("[Phase5] 結果: タイムアウト (0m 到達を超音波で確認できず)")
+        elif fallback:
+            log(f"[Phase5] 結果: カメラ方式を中止 ({fallback_reason}) → 超音波スキャンへ", "WARN")
+        else:
+            log("[Phase5] 結果: 中断")
+        if saved["n"]:
+            log(f"[Phase5] 撮影画像 {saved['n']} 枚を保存: {img_dir}")
+
+    if fallback and not aborted and remaining() > 5.0:
+        return phase5_sonar_fallback(sonar, motor, led, start_time, blink=False,
+                                     timeout_sec=remaining())
+    return reached
+
+
 # ===========================================================================
 # メイン
 # ===========================================================================
@@ -2131,9 +2570,10 @@ def main():
         # Phase 4: GPS 誘導走行 + スタック検知 (前方はPhase0のAxis Remapで補正済み)
         phase4_result = phase4_guided_run(bno, sonar, motor, led, start_time, baseline_horiz_acc)
 
-        # Phase 5: 目標付近 (PHASE4_TO_5_RADIUS 以内) まで来たら超音波で最終接近
+        # Phase 5: 目標付近 (PHASE4_TO_5_RADIUS 以内) まで来たらカメラで最終接近
+        #          (0m 到達は超音波で確認。カメラ不調時は超音波スキャンへ自動切替)
         if phase4_result == "NEAR_GOAL":
-            phase5_final_approach(sonar, motor, led, start_time)
+            phase5_camera_approach(sonar, motor, led, start_time)
         else:
             log(f"[Main] Phase4 の結果が {phase4_result} のため Phase5 は実行しません。", "WARN")
 
