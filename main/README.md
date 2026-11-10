@@ -59,6 +59,26 @@ pip install --upgrade pip
 pip install pynmea2
 deactivate
 
+★ OpenCV (カメラでゴールの赤いコーンを見つけるのに使う) が入ったか確認してください
+（上の python3-opencv で一緒に入りますが、入っていなかったことがあるので必ず確認）
+python3 -c "import cv2; print(cv2.__version__)"
+4.10.0 のように数字が出れば OK です。
+「No module named 'cv2'」と出たら、次のコマンドで OpenCV だけ入れ直してください
+（5〜10分くらいかかります。途中で止めないでください）
+sudo apt install -y --no-install-recommends python3-opencv
+入れ直したら、もう一度上の確認コマンドを実行して数字が出ることを確認してください。
+venv の中でも使えるか確認するときは
+source venv/bin/activate
+python3 -c "import cv2; print(cv2.__version__)"
+deactivate
+（venv は --system-site-packages で作っているので、apt で入れた OpenCV がそのまま使えます）
+
+注意
+・pip install opencv-python はしないでください（ラズパイだとビルドに何時間もかかったり失敗したりします。必ず apt の python3-opencv を使う）
+・OpenCV が入っていなくてもプログラムは止まらずに動きます（自動で精度の低い numpy 版に切り替わります）。
+  ただしゴールの形の判定が無くなり、検知も約 3 倍遅くなるので、本番では必ず入れてください
+・メモリが少ないので、apt のインストール中は他の重いプログラムを動かさないでください
+
 次にラズパイの設定をいじります
 sudo raspi-config
 
