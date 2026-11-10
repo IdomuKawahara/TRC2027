@@ -19,3 +19,20 @@
       テスト本文を変えずに mission パッケージへ向けて実行 (test/test_mission_equivalence.py) → 全部 OK
 - [x] main.py の状態遷移テスト test/test_mission_flow.py 12 件 OK
 - [x] リファクタリングをコミット (動作変更なし)。ここから先が改善作業
+
+## 改善作業 (リファクタリング後)
+- [x] 地磁気偏角プリセット (仙台/能代/種子島, auto, override) を config.py に追加。国土地理院 2020.0 値 + 年変化で外挿
+- [x] mission/stuck.py: StuckDetector (A/B 従来 + C: GPS 無進行, D: 片輪空転の窓判定) と
+      StuckRecovery (段差型: 後退→ジャイロで回転確認→前進 / 轍型: ツイスト→ロッキング→回転確認 / 最大 3 ラウンド / cancel)
+- [x] hardware.py: pivot_left / pivot_right (後退禁止ロック中は拒否)
+- [x] navigation.py: calc_distance_between
+- [x] phase4_gps.py: 検知/回避を stuck.py に差し替え、回避スレッドの二重起動防止と Phase4 終了時の中断
+- [x] phase5_camera.py: 重要な瞬間の画像を別枠で保存 (CAM_SAVE_EVENT_MAX)、初検知/見失いも保存
+- [x] test/test_stuck_recovery.py 19 件 OK (偽時計の GIL 問題と罠の配置を修正して通過)
+- [ ] 既存テスト (equivalence 42 / flow 12 / goal_vision 51 / heading 9) の再実行
+- [ ] REFACTOR_REPORT.md, README, FIELD_CHECKLIST 更新 → コミット → push
+- [x] 偏角プリセットの単体テストを test_mission_flow.py に追加、test_phase5_live.py を mission パッケージ (Facade 経由) に切り替え
+- [x] README (ファイル一覧) / FIELD_CHECKLIST (偏角・スタック試験) を更新
+- [x] 回帰スイート一式: flow 16 / equivalence 42 / stuck 19 / heading 9 / goal_vision 51 → 全部 OK
+- [x] REFACTOR_REPORT.md 作成
+- [x] コミット → push (feature/refactor-stuck-recovery)

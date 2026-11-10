@@ -167,22 +167,39 @@ https://github.com/YutakaOkutani/NSE2026
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ファイル一覧 (どの .py が何をするか)
 
-**本番で動かすのは `main/main6.py` です** (2026-11 時点の最新)。
-上の手順の「python3 main.py」は、今は `python3 main6.py` と読み替えてください。
+**本番で動かすのは `main/main.py` です** (2026-11-10〜。`python3 main/main.py`)。
+main.py はフェーズの切り替えだけを行い、中身は `main/mission/` パッケージに分かれています
+(main6.py を分割したもの。詳しくは `REFACTOR_REPORT.md`)。
 実機ができたらやることは **`main/FIELD_CHECKLIST.md`** にまとめてあります。
 
 ## main/ (本番プログラム)
 
 | ファイル | 何をするか |
 |---|---|
-| **`main6.py`** | **最新の本番プログラム。** Phase0 初期化 → 1 落下検知 → 2 分離 (後退→前進) → 3 キャリブレーション → 4 GPS 誘導 → 5 カメラ最終接近 (0m は超音波で確認)。main2.py に「方位の融合 (地磁気 + GPS の進行方位)」「BNO055 キャリブレーションの保存/読込」「Phase4 中にカメラでゴールを見つけたら早めに Phase5 へ」を追加したもの |
-| `main2.py` | main6.py の 1 つ前の版。Phase5 をカメラ方式にした版 (方位の融合などは無い) |
-| `main2.py.bak` | (ローカルのみ) Phase5 をカメラ方式にする前の main2.py のバックアップ |
-| `main.py`, `main3.py`, `main4.py`, `main5.py` | 過去の版 (Phase5 が超音波センサ方式の頃のもの)。中身の細かい違いは未整理 |
+| **`main.py`** | **本番の入口。フェーズの切り替えだけ** (Phase0 → 1 → 2 → 3 → 4 ⇄ 5)。中身は mission/ |
+| **`mission/config.py`** | **設定値はすべてここ** (目標座標・偏角プリセット・各フェーズの閾値・ピン番号)。実地で調整するのはこのファイルだけ |
+| `mission/state.py` | フェーズ間で共有する状態 (センサ最新値 `g_*`・現在フェーズ・ログバッファ) |
+| `mission/logger.py` | ログ出力・CSV 保存・LED 点滅 |
+| `mission/hardware.py` | GPS 受信スレッド・超音波 (SonarSensor)・モータ (MotorController, ピボット旋回含む)・BNO055 の Axis Remap |
+| `mission/navigation.py` | 距離・方位の計算 |
+| `mission/camera.py` | カメラ・色検知器・0m 確認設定の組み立て |
+| `mission/phase0_init.py` | Phase0: 初期化 (キャリブレーションプロファイルの書き戻し含む) |
+| `mission/phase1_fall.py` | Phase1: 落下検知 |
+| `mission/phase2_separation.py` | Phase2: 分離 (後退→停止→前進)。**パラシュート分離に関わるので変更禁止** |
+| `mission/phase3_calibration.py` | Phase3: BNO055 キャリブレーションと GPS 安定化 |
+| `mission/phase4_gps.py` | Phase4: GPS 誘導走行 (方位融合・カメラ見張り)。スタック処理は stuck.py |
+| **`mission/stuck.py`** | **スタック検知 (加速度/超音波/GPS 無進行/片輪空転) と回避 (段差型: 後退→回転、轍型: ツイスト→ロッキング)** |
+| `mission/phase5_camera.py` | Phase5: カメラ最終接近 + 超音波 0m 確認 (超音波スキャンの予備も) |
+| `main6.py` | 分割前の最新版 (= main.py と同じ動作 + 改善前)。参照用。`main6_before_refactor.py` はそのバックアップ |
+| `main2.py` | main6.py の 1 つ前の版 (方位の融合などは無い)。`main2_before_refactor.py` はそのバックアップ |
+| `main2.py.bak` | (ローカルのみ) Phase5 をカメラ方式にする前の main2.py |
+| `main3.py`, `main4.py`, `main5.py` | 過去の版 (Phase5 が超音波センサ方式の頃のもの)。中身の細かい違いは未整理 |
 | `finishv2.py` | 全センサ (BNO055・BMP180・GPS) の値をリアルタイム表示。**ゴール座標を測るとき** に使う (落下中の終端速度の測定にも) |
 | `runtest.py` | モータの前進・後退の動作確認 (test/test_run.py と同じ) |
 | `README.md` | このファイル (セットアップ手順・ファイル一覧) |
 | `FIELD_CHECKLIST.md` | 実機ができたらやることのチェックリスト |
+| `REFACTOR_REPORT.md` (リポジトリ直下) | 分割の内容・設定値の対応表・改善点・テスト結果 |
+| `PROGRESS.md` (リポジトリ直下) | 分割/改善作業の進捗メモ |
 
 ## sensor/ (センサのドライバ・部品)
 
@@ -206,7 +223,8 @@ https://github.com/YutakaOkutani/NSE2026
 ### カメラ・Phase5 (今回追加)
 | ファイル | 何をするか | モータ |
 |---|---|---|
-| **`test_phase5_live.py`** | **Phase5 だけを実機で試す。** 既定はカメラ (+超音波) で検知だけして、ゴールの方向・推定距離・「Phase5 なら次に何をするか」を表示。`--drive` で本物の Phase5 を実行。使い方は `README_phase5_test.md` | 既定は動かない / `--drive` で動く |
+| **`test_phase5_live.py`** | **Phase5 だけを実機で試す。** 既定はカメラ (+超音波) で検知だけして、ゴールの方向・推定距離・「Phase5 なら次に何をするか」を表示。`--drive` で本物の Phase5 (mission パッケージ) を実行。使い方は `README_phase5_test.md` | 既定は動かない / `--drive` で動く |
+| `mission_facade.py` | テスト用の部品。分割後の mission パッケージを、旧 main6 と同じ「M.名前」で扱えるようにする | |
 | **`bno055_calibrate.py`** | **本番前に BNO055 をキャリブレーションして `config/bno055_calib.json` に保存** | 動かない |
 | `README_phase5_test.md` | Phase5 の仕組みと test_phase5_live.py の使い方の解説 | |
 
@@ -217,6 +235,9 @@ https://github.com/YutakaOkutani/NSE2026
 | `test_phase5_camera.py` | Phase5 全体を偽のカメラ・モータ・超音波で動かすシミュレーション (21 件) |
 | `test_heading_fusion.py` | 地磁気 + GPS COG の方位の融合 (9 件) |
 | `test_main6_improvements.py` | main6.py の改修点: キャリブレーションの保存・Axis Remap・Phase4 の走行シミュレーション・カメラでのゴール確定 (21 件) |
+| **`test_mission_equivalence.py`** | 上の 2 つのシミュレーション (42 件) を、本文を変えずに mission パッケージへ向けて実行 (分割前後で動作が同じことの確認) |
+| **`test_mission_flow.py`** | main.py のフェーズ切り替え (状態遷移) をモックで確認 + 偏角プリセット (16 件) |
+| **`test_stuck_recovery.py`** | スタック検知と回避動作のシミュレーション (段差・轍・片輪空転・空転・壁) (19 件) |
 
 ### 以前からある試験プログラム
 | ファイル | 何をするか | モータ |

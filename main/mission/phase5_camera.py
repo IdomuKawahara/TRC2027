@@ -316,20 +316,33 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
 
     # ── 撮影画像の保存先 (後で検知の様子を確認するため) ──
     img_dir = C.LOG_DIR / f"cam_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    saved = {"n": 0, "last": 0.0}
+    saved = {"n": 0, "ev": 0, "last": 0.0}   # n: 定期保存, ev: 重要な瞬間 (別枠)
 
     def save_frame(rgb, det, tag: str, force: bool = False):
-        if rgb is None or saved["n"] >= C.CAM_SAVE_MAX:
+        """★改善: 定期保存 (CAM_SAVE_INTERVAL_SEC ごと, 上限 CAM_SAVE_MAX) とは別枠で、
+        force=True の重要な瞬間 (初検知・見失い・0m 確認) は CAM_SAVE_EVENT_MAX 枚まで必ず保存する。
+        以前は両方合わせて上限に達すると、最後の到達確認の画像が残らないことがあった。"""
+        if rgb is None:
             return
         now = time.time()
-        if not force and (C.CAM_SAVE_INTERVAL_SEC <= 0 or now - saved["last"] < C.CAM_SAVE_INTERVAL_SEC):
-            return
+        if force:
+            if saved["ev"] >= C.CAM_SAVE_EVENT_MAX:
+                return
+        else:
+            if saved["n"] >= C.CAM_SAVE_MAX:
+                return
+            if C.CAM_SAVE_INTERVAL_SEC <= 0 or now - saved["last"] < C.CAM_SAVE_INTERVAL_SEC:
+                return
         try:
             img_dir.mkdir(parents=True, exist_ok=True)
-            path = img_dir / f"{saved['n']:03d}_{now - p5_start:06.1f}s_{tag}.jpg"
+            idx = saved["n"] + saved["ev"]
+            path = img_dir / f"{idx:03d}_{now - p5_start:06.1f}s_{tag}.jpg"
             gv.save_rgb_jpeg(rgb, path, det)
-            saved["n"] += 1
-            saved["last"] = now
+            if force:
+                saved["ev"] += 1
+            else:
+                saved["n"] += 1
+                saved["last"] = now
         except Exception as e:
             log(f"[Phase5][WARN] 画像保存失敗: {e}", "WARN")
 
@@ -462,6 +475,7 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
     prev_heading = None
     last_side = "RIGHT"
     cam_fail = 0
+    prev_detected = False
     last_report = p5_start
 
     try:
@@ -486,7 +500,14 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
             sonar_str = f"{st.g_sonar_m:.3f}" if st.g_sonar_m is not None else "---"
             state = "TRACK" if det.detected else "SEARCH"
             action_str = ""
-            save_frame(rgb, det, state.lower())
+            # ★改善: 初めて見えた / 見失った瞬間は別枠で保存 (後で検知の様子を確認するため)
+            if det.detected and not prev_detected:
+                save_frame(rgb, det, "found", force=True)
+            elif prev_detected and not det.detected:
+                save_frame(rgb, det, "lost", force=True)
+            else:
+                save_frame(rgb, det, state.lower())
+            prev_detected = det.detected
 
             if det.detected:
                 lost = 0
@@ -605,8 +626,8 @@ def phase5_camera_approach(sonar: SonarSensor, motor: MotorController,
             log(f"[Phase5] 結果: カメラ方式を中止 ({fallback_reason}) → 超音波スキャンへ", "WARN")
         else:
             log("[Phase5] 結果: 中断")
-        if saved["n"]:
-            log(f"[Phase5] 撮影画像 {saved['n']} 枚を保存: {img_dir}")
+        if saved["n"] + saved["ev"]:
+            log(f"[Phase5] 撮影画像 {saved['n'] + saved['ev']} 枚を保存 (定期 {saved['n']} / 重要 {saved['ev']}): {img_dir}")
 
     if return_gps:
         return C.PHASE5_RETURN_GPS

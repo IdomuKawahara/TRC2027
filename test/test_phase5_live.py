@@ -10,7 +10,7 @@ TRC2027/test/test_phase5_live.py
   (既定) 検知モード  … カメラ (+ 超音波) だけを使い、モータは一切動かさない。
                        毎フレーム「ゴールがどこに見えるか」「Phase5 なら次に何をするか」
                        を表示する。机の上でも安全に試せる。
-  --drive            … main6.py の phase5_camera_approach() をそのまま実行する。
+  --drive            … main/main.py (mission パッケージ) の phase5_camera_approach() をそのまま実行する。
                        ★モータが動く★ 機体を床に置き、周りに人や物がないことを確認すること。
 
 使い方 (詳しくは test/README_phase5_test.md):
@@ -34,7 +34,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "sensor"))
 sys.path.insert(0, str(ROOT / "main"))
 
-import main6 as M          # noqa: E402  (最新の main6.py を使う。import だけではハードウェアは初期化されない)
+sys.path.insert(0, str(ROOT / "test"))
+import mission_facade      # noqa: E402
+# ★ 分割後の mission パッケージ (main/main.py と同じコード) を使う。設定値・状態・関数を
+#   旧 main6 と同じ「M.名前」で読み書きできるようにする Facade 経由。import だけでは
+#   ハードウェアは初期化されない
+M = mission_facade.MissionFacade()
 import goal_vision as gv   # noqa: E402
 
 # IMX219 を全画角モード (CAM_FULL_FOV=True) で使ったときの水平画角 [deg]
@@ -287,7 +292,7 @@ def run_detect(args):
 
 def run_drive(args):
     print("\n" + "!" * 62)
-    print("  ★ 走行モード: main6.py の Phase5 をそのまま実行します。モータが動きます ★")
+    print("  ★ 走行モード: main/main.py (mission パッケージ) の Phase5 をそのまま実行します。モータが動きます ★")
     print(f"  タイムアウト {M.FINAL_APPROACH_TIMEOUT_SEC:.0f} 秒 / Ctrl+C で緊急停止")
     print("  機体を床に置き、周囲に人や物がないことを確認してください。")
     print("!" * 62)

@@ -8,6 +8,7 @@ config.py
           311〜654 行 (設定値セクション), 1097〜1130 行 (BNO_ORIENTATION)
 """
 
+import datetime as _dt
 from pathlib import Path
 
 # --- パス ---------------------------------------------------------------------
@@ -31,7 +32,44 @@ TARGET_LNG = 140.8544151    # 目標経度  [度]
 PHASE4_TO_5_RADIUS = 2.0    # [m]
 
 # --- 地磁気偏角 (仙台付近) --------------------------------------------------
-MAG_DECLINATION = -8.0      # [度]  西偏 → 負値
+# ★改善: 会場ごとのプリセットから自動で決める。
+#   MAG_SITE に "sendai" / "noshiro" / "tanegashima" を指定するか、"auto" なら
+#   TARGET_LAT/LNG に一番近い会場を選ぶ。値は国土地理院「都道府県庁所在地の偏角値」
+#   (2020.0 年値, 西偏を負) を元に、5 年あたりの変化量で実行日まで外挿する。
+#   能代・種子島は県庁所在地ではないので近隣 (秋田/青森, 鹿児島/那覇) から補間した概算。
+#   走行中は GPS の進行方位との差を自動で学習する (heading_fusion) ので、
+#   ここの 0.3° 程度の誤差は結果に影響しない。
+#   手動で決めたいときは MAG_DECLINATION_OVERRIDE に数値を入れる (プリセットより優先)。
+MAG_SITE = "auto"
+MAG_SITE_PRESETS = {
+    #                 名前      緯度     経度     2020.0 偏角[°]  変化[°/年]  (出典: 国土地理院 資料-3)
+    "sendai":      {"name": "仙台",   "lat": 38.27, "lng": 140.87, "decl_2020": -8.6, "rate_per_year": -0.06},
+    "noshiro":     {"name": "能代",   "lat": 40.17, "lng": 140.02, "decl_2020": -8.8, "rate_per_year": -0.06},
+    "tanegashima": {"name": "種子島", "lat": 30.40, "lng": 130.97, "decl_2020": -6.8, "rate_per_year": -0.08},
+}
+MAG_DECLINATION_OVERRIDE = None   # [度] 数値を入れるとプリセットを使わずこの値を使う (西偏 → 負値)
+
+
+def _resolve_mag_declination(site, target_lat, target_lng, override, today=None):
+    """プリセット (または override) から、今日の日付での偏角 [度] を求める。
+    戻り値: (使った会場のキー or "override", 偏角)"""
+    if override is not None:
+        return "override", float(override)
+    if site == "auto":
+        def dist2(p):
+            return ((p["lat"] - target_lat) ** 2
+                    + ((p["lng"] - target_lng) * 0.8) ** 2)   # 緯度 38° 付近の経度の縮み (cos) を概算
+        site = min(MAG_SITE_PRESETS, key=lambda k: dist2(MAG_SITE_PRESETS[k]))
+    if site not in MAG_SITE_PRESETS:
+        raise ValueError(f"MAG_SITE={site!r} は未定義。{list(MAG_SITE_PRESETS)} か 'auto' を指定")
+    p = MAG_SITE_PRESETS[site]
+    today = today or _dt.date.today()
+    years = (today - _dt.date(2020, 1, 1)).days / 365.25
+    return site, round(p["decl_2020"] + p["rate_per_year"] * years, 2)
+
+
+MAG_SITE_RESOLVED, MAG_DECLINATION = _resolve_mag_declination(
+    MAG_SITE, TARGET_LAT, TARGET_LNG, MAG_DECLINATION_OVERRIDE)   # [度]  西偏 → 負値
 
 # --- Phase 1: 落下検知 -------------------------------------------------------
 FALL_THRESHOLD       = 3.0  # [m/s²]  合成加速度ノルムがこれ以下 → 落下中
@@ -163,11 +201,32 @@ STUCK_COUNT_THRESHOLD      = 40    # ★変更: 連続カウント数 (20→40, 
 
 # ★変更: 固定秒数の旋回ではなく、地磁気(9軸)から算出した方位の変化量で
 #        「ちょうど指定角度回転した」ことを確認してから前進する方式に変更。
-STUCK_RECOVER_TURN_DEG          = 180.0  # [度] 初回回復: 直前と反対方向へ回転する角度
+STUCK_RECOVER_TURN_DEG          = 90.0   # [度] 初回回復: 直前と反対方向へ回転する角度
+                                         #      ★変更 180→90: 180° 回って 10 秒進むと、誘導に戻った後に
+                                         #      同じ段差へ同じ向きから突っ込む。90° で横に回り込む方が
+                                         #      抜けやすい (再スタックのたびにさらに 90° ずつ回る)
 STUCK_RECOVER_RETRY_TURN_DEG    = 90.0   # [度] 前進中に再スタックした場合の追加回転角度
 STUCK_RECOVER_TURN_TIMEOUT_SEC  = 15.0   # [s] 回転動作の安全タイムアウト (方位が読めない場合の保険)
 STUCK_RECOVER_FWD_SEC           = 10.0   # [s] 回復: 回転後の前進時間 (★変更: 30→10)
 STUCK_RECOVER_MAX_RETRIES       = 5      # [回] 前進中の再スタック→90°回転を繰り返す最大回数 (無限ループ防止)
+
+# ★改善: スタック検知の追加条件と、段差型/轍型に分けた回避動作 (mission/stuck.py)
+STUCK_NOPROGRESS_SEC     = 12.0   # [s]  前進指令がこれだけ続いても…
+STUCK_NOPROGRESS_DIST_M  = 1.0    # [m]  …GPS 位置がこれ以上動かなければスタック (空転でも振動で加速度が出る場合を拾う)
+STUCK_SPIN_GYRO_DPS      = 25.0   # [deg/s] 走行指令中・GPS 速度なしでヨー角速度がこれ以上 = 片輪空転でその場回転
+STUCK_SPIN_WINDOW        = 60     # [回] 直近この周期 (LOOP_DT × 60 = 6 s) のうち…
+STUCK_SPIN_COUNT         = 45     # [回] …これだけ「回っている」周期があれば確定 (誘導の 180° 旋回は約 2.6 s なので区別できる)
+STUCK_BACK_SEC           = 1.5    # [s]  段差型: まず後退する時間 (回復中だけ後退を許可)
+STUCK_ROTATE_CHECK_SEC   = 3.0    # [s]  回転を始めてこの秒数で…
+STUCK_ROTATE_MIN_DEG     = 15.0   # [度] …これだけ回れていなければ「タイヤが地面を掴めていない」= 轍型
+STUCK_ROTATE_OK_FRAC     = 0.6    # [-]  目標角度のこの割合以上回れたら「向きを変えられた」とみなす
+STUCK_TWIST_CYCLES       = 6      # [回] ツイスト (左右ピボット交互) の回数
+STUCK_TWIST_PULSE_SEC    = 0.35   # [s]  ツイスト 1 回のパルス長
+STUCK_TWIST_PULSE_GROWTH = 0.5    # [-]  ラウンドごとにパルスを (1 + これ×(ラウンド-1)) 倍に伸ばす
+STUCK_ROCK_CYCLES        = 4      # [回] ロッキング (後退⇄前進) の回数
+STUCK_ROCK_SEC           = 0.4    # [s]  ロッキング 1 回のパルス長
+STUCK_MAX_ROUNDS         = 3      # [回] 回避のラウンド数の上限 (これで抜けられなければ誘導に戻る)
+STUCK_PAUSE_SEC          = 0.15   # [s]  パルス間の停止時間 (モータの逆転を緩和)
 
 # ★追加: 走行フェーズで目標までの距離・方位ずれをまとめてログ表示する周期
 NAV_REPORT_INTERVAL_SEC = 5.0  # [s]
@@ -253,7 +312,9 @@ CAM_OBSTACLE_TURN_SEC  = 0.6      # [s]  回避の旋回
 CAM_OBSTACLE_FWD_SEC   = 1.0      # [s]  回避の前進
 # 記録
 CAM_SAVE_INTERVAL_SEC  = 5.0      # [s]  この間隔で撮影画像を logs/cam_*/ に保存 (0 で無効)
-CAM_SAVE_MAX           = 150      # [枚] 保存枚数の上限 (SD カード容量対策)
+CAM_SAVE_MAX           = 150      # [枚] 定期保存の上限 (SD カード容量対策)
+CAM_SAVE_EVENT_MAX     = 60       # [枚] ★改善: 重要な瞬間 (初めて見えた・見失った・0m 確認) の画像は
+                                  #      定期保存の上限とは別枠でこの枚数まで必ず保存する
 CAM_REPORT_INTERVAL_SEC = 3.0     # [s]  まとめログの周期
 
 # --- Phase 5: 超音波による 0m 到達確認 (★追加) ------------------------------

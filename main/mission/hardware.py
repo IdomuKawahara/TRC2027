@@ -276,6 +276,27 @@ class MotorController:
         self._mot_a.stop()
         self._mot_b.forward()
 
+    def pivot_left(self):
+        """★追加: 右モータ前進 / 左モータ後退 → その場で左回転 (スタック脱出のツイスト用)。
+        左モータが後退するため、後退禁止モード中は動かさない。"""
+        if self._forward_only:
+            log("[Motor][WARN] 後退禁止モード中に pivot_left() が呼び出されました。停止します。", "WARN")
+            self.stop()
+            return
+        self._start_move(1.0, 1.0)
+        self._mot_a.forward()
+        self._mot_b.backward()
+
+    def pivot_right(self):
+        """★追加: 右モータ後退 / 左モータ前進 → その場で右回転 (スタック脱出のツイスト用)。"""
+        if self._forward_only:
+            log("[Motor][WARN] 後退禁止モード中に pivot_right() が呼び出されました。停止します。", "WARN")
+            self.stop()
+            return
+        self._start_move(1.0, 1.0)
+        self._mot_a.backward()
+        self._mot_b.forward()
+
     def turn_left_weak(self):
         self._start_move(1.0, C.WEAK_RATIO)
         self._mot_a.forward()

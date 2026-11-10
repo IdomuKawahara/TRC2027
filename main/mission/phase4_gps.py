@@ -19,6 +19,7 @@ from . import state as st
 from .state import mark_sensor_fail, mark_sensor_ok
 from .logger import blink_led, log, log_data_status, log_sensor_row
 from .hardware import MotorController, SonarSensor
+from .stuck import StuckDetector, StuckRecovery
 from .navigation import calc_azimuth_with_front, calc_direction_diff, calc_distance, calc_target_bearing
 from .camera import make_camera, make_goal_detector
 
@@ -65,7 +66,11 @@ def phase4_guided_run(bno: BNO055, sonar: SonarSensor,
     log(f"  BNO055 Axis Remap 設定: BNO_ORIENTATION={C.BNO_ORIENTATION} (Phase0 で適用済み)")
     log(f"  スタック閾値(★厳格化): 前進中の水平加速度 < {C.STUCK_HORIZON_ACCEL_THRESH} m/s² "
         f"かつ GPS速度 < {C.STUCK_GPS_SPEED_THRESH_MPS} m/s  or 超音波 < {C.STUCK_SONAR_DIST_THRESH} m")
-    log(f"  スタック確定: {C.STUCK_COUNT_THRESHOLD} 回連続 ({C.STUCK_COUNT_THRESHOLD * C.LOOP_DT:.1f} s)")
+    log(f"  スタック確定: {C.STUCK_COUNT_THRESHOLD} 回連続 ({C.STUCK_COUNT_THRESHOLD * C.LOOP_DT:.1f} s)  "
+        f"追加: GPS が {C.STUCK_NOPROGRESS_SEC:.0f}s で {C.STUCK_NOPROGRESS_DIST_M:.1f}m 進まない / "
+        f"前進中にヨー角速度 >= {C.STUCK_SPIN_GYRO_DPS:.0f}deg/s")
+    log(f"  スタック回避: 後退 {C.STUCK_BACK_SEC:.1f}s → {C.STUCK_RECOVER_TURN_DEG:.0f}° 回転 (ジャイロで確認) → 前進 "
+        f"{C.STUCK_RECOVER_FWD_SEC:.0f}s / 回れなければ轍型とみなしてツイスト+ロッキング (最大 {C.STUCK_MAX_ROUNDS} ラウンド)")
     log(f"  方位: 直進中 (速度>={C.HEADING_COG_MIN_SPEED_MPS} m/s) は GPS の COG、それ以外は地磁気+学習したずれ  "
         f"[{heading_est.summary()}]")
     if C.CAM_P4_ENABLE:
@@ -115,127 +120,20 @@ def phase4_guided_run(bno: BNO055, sonar: SonarSensor,
     last_nav_report_time = p4_start  # 目標距離・方位ずれのまとめログ用
     motor_cmd = "FORWARD"  # ★追加: スタック判定で「前進中か」を見るため、ループ開始前に初期化しておく
 
-    def rotate_until_degrees(direction: str, target_deg: float, note_prefix: str) -> float:
-        """
-        機体前方基準の方位 (calc_azimuth_with_front) の変化量を積算し、
-        指定方向へ target_deg 度回転するまで強旋回を続ける。
-        メインループが継続的に更新しているグローバル g_mag を参照するだけで
-        自らは BNO055 に触れない (メインループとの I2C 同時アクセスを回避するため)。
-        方位が読めない/回転が進まない等の異常時に無限ループしないよう、
-        STUCK_RECOVER_TURN_TIMEOUT_SEC で安全に打ち切る。
-        戻り値: 実際に回転できた角度 (概算, 度)
-        """
-        if direction == "L":
-            motor.turn_left_strong()
-            note = f"{note_prefix}_L"
-        else:
-            motor.turn_right_strong()
-            note = f"{note_prefix}_R"
+    # ★改善: スタック検知/回避は mission/stuck.py (段差型は後退→回転、轍型はツイスト→ロッキング)
+    detector = StuckDetector(baseline_horiz_acc)
+    recovery = StuckRecovery(motor, start_time, baseline_horiz_acc)
+    recovery_thread = None
+    stuck_reason = ""
 
-        t_start   = time.time()
-        prev_az   = calc_azimuth_with_front(st.g_mag)
-        cumulative = 0.0
-        while True:
-            now = time.time()
-            if now - t_start > C.STUCK_RECOVER_TURN_TIMEOUT_SEC:
-                log(f"[Phase4][STUCK] {note}: 回転タイムアウト "
-                    f"({C.STUCK_RECOVER_TURN_TIMEOUT_SEC:.0f}s, 約{cumulative:.1f}度で打ち切り)", "WARN")
-                break
-            cur_az = calc_azimuth_with_front(st.g_mag)
-            delta  = calc_direction_diff(cur_az, prev_az)
-            cumulative += delta
-            prev_az = cur_az
-            log_sensor_row(time.time() - start_time, note,
-                           f"rot={cumulative:.1f}/{target_deg:.0f}deg")
-            if abs(cumulative) >= target_deg:
-                break
-            time.sleep(0.1)
-
-        motor.stop()
-        log(f"[Phase4][STUCK] {note}: 回転完了 (目標{target_deg:.0f}度 / 実測約{cumulative:.1f}度)")
-        return cumulative
-
-    def forward_with_monitor(duration_sec: float, note_prefix: str) -> bool:
-        """
-        duration_sec 秒前進しつつ、その間も水平加速度・GPS速度・超音波による
-        スタック判定を継続する (★通常走行時と同じ厳格化条件)。
-        STUCK_COUNT_THRESHOLD 回連続でスタック条件を満たしたらその場で
-        打ち切り True (再スタック) を返す。何も起きなければ False。
-        グローバル g_acc / g_gps_speed / g_gps_valid / g_sonar_m
-        (メインループが更新) を参照するだけで、自らはセンサに触れない。
-        """
-        motor.forward()
-        t_end = time.time() + duration_sec
-        local_stuck_count = 0
-        restuck = False
-        while time.time() < t_end:
-            horiz_acc = math.sqrt(st.g_acc[0]**2 + st.g_acc[1]**2)
-            gps_speed_mps = st.g_gps_speed * C.KNOTS_TO_MPS
-            is_slow_gps    = (not st.g_gps_valid) or (gps_speed_mps < C.STUCK_GPS_SPEED_THRESH_MPS)
-            is_stuck_acc   = is_slow_gps and (horiz_acc < (baseline_horiz_acc + C.STUCK_HORIZON_ACCEL_THRESH))
-            is_stuck_sonar = (st.g_sonar_m is not None and st.g_sonar_m < C.STUCK_SONAR_DIST_THRESH)
-            if is_stuck_acc or is_stuck_sonar:
-                local_stuck_count += 1
-            else:
-                local_stuck_count = 0
-
-            log_sensor_row(time.time() - start_time, f"{note_prefix}_FORWARD",
-                           f"remain={t_end - time.time():.1f}s stuck_cnt={local_stuck_count}")
-
-            if local_stuck_count >= C.STUCK_COUNT_THRESHOLD:
-                restuck = True
-                break
-            time.sleep(0.1)
-
-        motor.stop()
-        return restuck
-
-    def do_recovery():
-        """
-        スタック回復動作 (★改良版)。
-        スタック検知の直前に旋回していた方向と逆方向へ、地磁気の方位変化から
-        【ちょうど180°】回転したことを確認してから STUCK_RECOVER_FWD_SEC (10秒)
-        前進する。この前進の最中も引き続きスタック判定を行い、再びスタックを
-        検知した場合はさらに90°回転してから再度10秒前進する、という動作を
-        STUCK_RECOVER_MAX_RETRIES 回まで繰り返す (無限ループ防止のため上限あり)。
-        """
-        nonlocal stuck_count, in_recovery
-        in_recovery = True
-
-        # 直前の旋回方向の反対を選択 (旋回していなければデフォルトで右旋回)
-        if last_turn_dir == "L":
-            recover_dir = "R"
-        elif last_turn_dir == "R":
-            recover_dir = "L"
-        else:
-            recover_dir = "R"
-
-        log(f"[Phase4][STUCK] スタック検知！ 回復動作開始 (直前の旋回方向: {last_turn_dir or 'なし'})")
-        log(f"         {'左' if recover_dir == 'L' else '右'}方向へ約{C.STUCK_RECOVER_TURN_DEG:.0f}° 回転"
-            f" (直前と反対方向) → 前進 {C.STUCK_RECOVER_FWD_SEC:.0f} s")
-
-        rotate_until_degrees(recover_dir, C.STUCK_RECOVER_TURN_DEG, "RECOVER180")
-
-        cur_dir = recover_dir
-        attempt = 0
-        while True:
-            attempt += 1
-            restuck = forward_with_monitor(C.STUCK_RECOVER_FWD_SEC, f"RECOVER_ATT{attempt}")
-            if not restuck:
-                break
-            if attempt >= C.STUCK_RECOVER_MAX_RETRIES:
-                log(f"[Phase4][STUCK] 前進中に再スタックを検知しましたが、"
-                    f"最大試行回数({C.STUCK_RECOVER_MAX_RETRIES})に達したため走行を再開します。", "WARN")
-                break
-            cur_dir = "R" if cur_dir == "L" else "L"
-            log(f"[Phase4][STUCK] 前進中に再びスタックを検知 → "
-                f"{'左' if cur_dir == 'L' else '右'}方向へ{C.STUCK_RECOVER_RETRY_TURN_DEG:.0f}° 回転して再度回避します "
-                f"(試行 {attempt + 1}/{C.STUCK_RECOVER_MAX_RETRIES})")
-            rotate_until_degrees(cur_dir, C.STUCK_RECOVER_RETRY_TURN_DEG, f"RECOVER90_{attempt}")
-
-        stuck_count = 0
-        in_recovery = False
-        log("[Phase4][STUCK] 回復動作完了。誘導走行に戻ります。")
+    def do_recovery(reason: str, kind_hint):
+        """別スレッドで回避動作を行い、終わったら検知器をリセットして誘導走行に戻す。"""
+        nonlocal in_recovery
+        try:
+            recovery.run(last_turn_dir, reason, kind_hint)
+        finally:
+            detector.reset()
+            in_recovery = False
 
     try:
         while True:
@@ -340,34 +238,21 @@ def phase4_guided_run(bno: BNO055, sonar: SonarSensor,
                 near_goal = True
                 break
 
-            # ── スタック検知 (★厳格化) ────────────────────────────────────
-            # 判定A: 水平加速度が基準より低い。ただし「前進」を指示している
-            #        間のみ有効とする。旋回(その場スピン/弱旋回)中はもともと
-            #        並進加速度が小さくなるため、以前はこれを誤って
-            #        「動いていない=スタック」と判定していた (実運用で確認された誤検知)。
+            # ── スタック検知 (★改善: mission/stuck.py の StuckDetector) ──
+            #   A: 前進中に加速度が静止時並み & GPS が遅い (従来)   B: 超音波が近い (従来)
+            #   C: 前進指令が続くのに GPS 位置が進まない (追加)     D: 前進指令なのにその場で回る (追加)
             is_forward_intent = (motor_cmd == "FORWARD")
-            is_stuck_acc_raw  = horiz_acc < (baseline_horiz_acc + C.STUCK_HORIZON_ACCEL_THRESH)
-
-            # 判定A': 加速度だけでなく GPS 対地速度も十分低いことを AND 条件で要求。
-            #         振動などのノイズだけで加速度が一瞬下がっただけの誤検知を防ぐ。
             gps_speed_mps = st.g_gps_speed * C.KNOTS_TO_MPS
-            is_slow_gps   = (not st.g_gps_valid) or (gps_speed_mps < C.STUCK_GPS_SPEED_THRESH_MPS)
-
-            is_stuck_acc = is_forward_intent and is_stuck_acc_raw and is_slow_gps
-
-            # 判定B: 超音波が近すぎる (壁に当たっている。旋回中でも常時有効)
-            is_stuck_sonar = (st.g_sonar_m is not None and st.g_sonar_m < C.STUCK_SONAR_DIST_THRESH)
-
-            is_stuck = is_stuck_acc or is_stuck_sonar
-
             note = ""
-            if is_stuck and not in_recovery:
-                stuck_count += 1
-                if stuck_count >= C.STUCK_COUNT_THRESHOLD:
-                    note = "STUCK!"
-            else:
-                if not in_recovery:
-                    stuck_count = 0
+            stuck_confirmed = False
+            if not in_recovery:
+                _, stuck_confirmed, stuck_reason = detector.update(
+                    loop_start, is_forward_intent, horiz_acc, st.g_gps_valid, gps_speed_mps,
+                    st.g_sonar_m, st.g_gyro[2], lat, lng,
+                    driving=motor_cmd.startswith(("FORWARD", "TURN")))
+                stuck_count = detector.count
+                if stuck_confirmed:
+                    note = f"STUCK!{stuck_reason}"
 
             # ── モータ制御 ──
             if in_recovery:
@@ -375,12 +260,16 @@ def phase4_guided_run(bno: BNO055, sonar: SonarSensor,
             elif not st.g_gps_valid:
                 motor.stop()
                 motor_cmd = "GPS_WAIT"
-            elif stuck_count >= C.STUCK_COUNT_THRESHOLD:
+            elif stuck_confirmed:
                 motor.stop()
                 motor_cmd = "STUCK_STOP"
-                # 別スレッドで回復動作 (メインループをブロックしないため)
-                t_rec = threading.Thread(target=do_recovery, daemon=True)
-                t_rec.start()
+                # 別スレッドで回復動作 (メインループをブロックしないため)。
+                # ★改善: スレッドが動き出す前に次の周期が来ても二重に起動しないよう、
+                #        フラグはここで立てる
+                in_recovery = True
+                recovery_thread = threading.Thread(target=do_recovery, daemon=True,
+                                                   args=(stuck_reason, detector.kind_hint))
+                recovery_thread.start()
             else:
                 motor_cmd = motor.apply_diff(diff)
 
@@ -417,6 +306,13 @@ def phase4_guided_run(bno: BNO055, sonar: SonarSensor,
         log("[Phase4] Ctrl+C 受信 → 緊急停止")
 
     finally:
+        # ★改善: 回避動作のスレッドが残ったまま Phase5 に進むとモータを取り合うので、
+        #        先に打ち切って終了を待つ
+        if recovery_thread is not None and recovery_thread.is_alive():
+            recovery.cancel()
+            recovery_thread.join(timeout=3.0)
+            if recovery_thread.is_alive():
+                log("[Phase4][WARN] 回避動作スレッドが 3 秒以内に止まりませんでした", "WARN")
         motor.stop()
         # ★追加: Phase4限定の後退禁止ロックを解除 (Phase5などに影響させないため)
         motor.set_forward_only(False)

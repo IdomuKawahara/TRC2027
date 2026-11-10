@@ -39,6 +39,17 @@ def calc_distance(lat, lng) -> float:
     c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
     return C.EARTH_RADIUS * c
 
+def calc_distance_between(lat1, lng1, lat2, lng2) -> float:
+    """★追加: 2 点間の Haversine 距離 [m] (スタック検知の「進んでいるか」判定用)。"""
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = (math.sin(dlat / 2.0) ** 2
+         + math.cos(p1) * math.cos(p2) * math.sin(dlng / 2.0) ** 2)
+    return C.EARTH_RADIUS * 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+
+
 def calc_target_bearing(lat, lng) -> float:
     """
     大圆 (great-circle) 初期方位角の公式による、現在地から目標地点への

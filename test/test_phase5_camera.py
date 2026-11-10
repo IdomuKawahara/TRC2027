@@ -201,12 +201,13 @@ class Phase5SimBase(unittest.TestCase):
                                           monotonic=self.clock.monotonic)
         self._saved = {k: getattr(M, k) for k in
                        ("time", "blink_led", "phase5_sonar_fallback", "print",
-                        "FINAL_APPROACH_TIMEOUT_SEC", "CAM_SAVE_MAX", "LOG_DIR")
+                        "FINAL_APPROACH_TIMEOUT_SEC", "CAM_SAVE_MAX", "CAM_SAVE_EVENT_MAX", "LOG_DIR")
                        if hasattr(M, k)}
         M.time = fake_time
         M.blink_led = lambda *a, **k: None
         M.FINAL_APPROACH_TIMEOUT_SEC = self.TIMEOUT
         M.CAM_SAVE_MAX = 0
+        M.CAM_SAVE_EVENT_MAX = 0             # (mission 版) 重要な瞬間の別枠保存も止める
         M.print = lambda *a, **k: None       # 表形式のコンソール出力を抑制
         self.logs = []
         self._orig_log = M.log
@@ -393,6 +394,7 @@ class TestPhase5Sim(Phase5SimBase):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as d:
             M.LOG_DIR = Path(d)
             M.CAM_SAVE_MAX = 50
+            M.CAM_SAVE_EVENT_MAX = 50
             w = World(self.clock, angle=10.0, dist=1.0)
             ok, *_ = self.run_sim(w)
             self.assertIs(ok, True)

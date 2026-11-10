@@ -187,6 +187,40 @@ class TestMainFlow(FlowBase):
         self.assertIn(("save_log", "/tmp/x.csv"), self.events)
 
 
+class TestDeclinationPresets(unittest.TestCase):
+    """地磁気偏角のプリセット (仙台/能代/種子島) と auto 選択。"""
+
+    def test_presets_resolve(self):
+        import datetime
+        d = datetime.date(2026, 11, 10)
+        r = C._resolve_mag_declination
+        self.assertEqual(r("sendai", 0, 0, None, d), ("sendai", -9.01))
+        self.assertEqual(r("noshiro", 0, 0, None, d), ("noshiro", -9.21))
+        self.assertEqual(r("tanegashima", 0, 0, None, d), ("tanegashima", -7.35))
+
+    def test_auto_picks_nearest_site(self):
+        import datetime
+        d = datetime.date(2026, 11, 10)
+        r = C._resolve_mag_declination
+        self.assertEqual(r("auto", 38.26, 140.85, None, d)[0], "sendai")
+        self.assertEqual(r("auto", 40.15, 140.00, None, d)[0], "noshiro")
+        self.assertEqual(r("auto", 30.37, 130.96, None, d)[0], "tanegashima")
+
+    def test_override_and_errors(self):
+        r = C._resolve_mag_declination
+        self.assertEqual(r("auto", 0, 0, -7.5), ("override", -7.5))
+        with self.assertRaises(ValueError):
+            r("tokyo", 0, 0, None)
+
+    def test_resolved_value_is_used_by_navigation(self):
+        from mission import navigation as nav
+        self.assertIsInstance(C.MAG_DECLINATION, float)
+        self.assertIn(C.MAG_SITE_RESOLVED, list(C.MAG_SITE_PRESETS) + ["override"])
+        # 磁北を向いた地磁気ベクトル (この計算式では y 成分が前方) → 方位 = 偏角分だけずれる
+        az = nav.calc_azimuth([0.0, 30.0, -20.0])
+        self.assertAlmostEqual(az, (0.0 + C.MAG_DECLINATION) % 360.0, places=6)
+
+
 class TestPackageLayout(unittest.TestCase):
     def test_no_circular_import_and_names(self):
         import importlib
