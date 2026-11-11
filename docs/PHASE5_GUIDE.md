@@ -1,6 +1,6 @@
 # Phase5 (カメラ最終接近) の仕組みと単体テストの使い方
 
-対象: `main/main6.py` (と `main/main2.py`) の Phase5、`sensor/goal_vision.py`、`test/test_phase5_live.py`
+対象: `main/mission/phase5_camera.py` (Phase5)、`sensor/goal_vision.py`、`tools/phase5_live.py`
 
 ---
 
@@ -91,7 +91,7 @@ Phase4 (GPS) ─2m以内─▶ Phase5
 
 ---
 
-## 4. 単体テスト `test/test_phase5_live.py` の使い方
+## 4. 単体テスト `tools/phase5_live.py` の使い方
 
 Phase0〜4 (落下検知・GPS など) を飛ばして、**Phase5 だけ** を実機で試すツールです。
 
@@ -99,8 +99,8 @@ Phase0〜4 (落下検知・GPS など) を飛ばして、**Phase5 だけ** を�
 
 ```bash
 cd ~/TRC2027
-python3 test/test_phase5_live.py              # カメラ + 超音波
-python3 test/test_phase5_live.py --no-sonar   # カメラだけ (超音波を配線していないとき)
+python3 tools/phase5_live.py              # カメラ + 超音波
+python3 tools/phase5_live.py --no-sonar   # カメラだけ (超音波を配線していないとき)
 ```
 
 カメラの前で赤い物を左右に動かすと、Phase5 ならどう動くかが表示されます。止めるときは **Ctrl+C** です。
@@ -108,7 +108,7 @@ python3 test/test_phase5_live.py --no-sonar   # カメラだけ (超音波を配
 **コーンが手元にないとき** は、赤いコップ・箱・紙などで試せます。コーンらしい形でないと無視されるので、形状チェックを切ってください。
 
 ```bash
-python3 test/test_phase5_live.py --no-shape --target-height 0.12   # 高さ 12cm の赤い物
+python3 tools/phase5_live.py --no-shape --target-height 0.12   # 高さ 12cm の赤い物
 ```
 
 ### 4-2. 画面の見方
@@ -151,10 +151,10 @@ python3 test/test_phase5_live.py --no-shape --target-height 0.12   # 高さ 12cm
 ### 4-4. 走行モード — ★モータが動きます★
 
 ```bash
-python3 test/test_phase5_live.py --drive --timeout 60
+python3 tools/phase5_live.py --drive --timeout 60
 ```
 
-`main6.py` の Phase5 (`phase5_camera_approach`) を **そのまま** 実行します。表示も本番と同じです。
+本番と同じ Phase5 (`main/mission/phase5_camera.py` の `phase5_camera_approach`) を **そのまま** 実行します。表示も本番と同じです。
 
 - `yes` と入力すると 3 秒後に開始します。Ctrl+C で緊急停止します。
 - 機体を床に置き、周りに人や物がないことを確認してから実行してください。
@@ -186,7 +186,7 @@ python3 test/test_phase5_live.py --drive --timeout 60
 | 症状 | 確認すること |
 |---|---|
 | 赤い物を写しても Det が 0 | `--save-mask` で白くなっているか確認。白くなっていない → 色が範囲外 (`--hue` を広げる)、暗すぎる (明るい場所で)。白いのに検知されない → 形状で落ちている (`--no-shape`) か小さすぎる |
-| 青い物に反応する | 赤と青が入れ替わっている → `--swap-rb` (OK なら main2.py の `CAM_SWAP_RB = True`) |
+| 青い物に反応する | 赤と青が入れ替わっている → `--swap-rb` (OK なら `main/mission/config.py` の `CAM_SWAP_RB = True`) |
 | 右にある物で「左へ旋回」になる | カメラの向きと回転の設定が合っていない。機体に上下逆に付けているなら既定のまま、外して正立で持っているなら `--no-rotate` |
 | 走行モードで 1 周する前 (または何周も) 回ってから Phase4 に戻る | 地磁気のキャリブレーション不足。ログの「地磁気で ○○° 旋回」を確認。地磁気を使わないなら `--no-bno` と `CAM_SEARCH_PULSES_PER_LAP` を調整 |
 | 推定距離が実際と違う | `--target-height` が実物の高さと合っているか。画角が違う場合もある |
@@ -195,7 +195,7 @@ python3 test/test_phase5_live.py --drive --timeout 60
 
 ---
 
-## 6. 調整する値 (main/main6.py の設定値セクション。main2.py も同じ名前)
+## 6. 調整する値 (`main/mission/config.py`)
 
 | 設定 | 既定 | 意味 |
 |---|---|---|

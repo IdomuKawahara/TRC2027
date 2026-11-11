@@ -1,12 +1,12 @@
 """
 mission_facade.py
 =================
-分割前の main6.py と同じ「1 つのモジュール」のように mission パッケージを
+mission パッケージを「1 つのモジュール」のように
 扱うためのテスト用アダプタ。
 
-既存のテスト (test_phase5_camera.py, test_main6_improvements.py) は
-`M.FINAL_APPROACH_TIMEOUT_SEC = 30` や `M.log = fake` のように main6 モジュールの
-属性を直接読み書きする。分割後は設定値は mission.config、共有状態は
+シミュレーションテスト (test_phase5_sim.py, test_phase4_sim.py) は
+`M.FINAL_APPROACH_TIMEOUT_SEC = 30` や `M.log = fake` のように 1 つのモジュール M の
+属性を直接読み書きする。しかし設定値は mission.config、共有状態は
 mission.state、関数は各フェーズモジュールにあり、さらに `log` などは
 `from .logger import log` で各モジュールに取り込まれているため、
 1 か所を差し替えても他のモジュールには反映されない。

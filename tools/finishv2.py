@@ -40,8 +40,8 @@ except ImportError:
     SERIAL_AVAILABLE = False
  
 # --- センサーモジュールのパスを追加 ----------------------------------------
-SCRIPT_DIR = Path(__file__).resolve().parent          # .../NSE2026/test/
-SENSOR_DIR = SCRIPT_DIR.parent / "sensor"             # .../NSE2026/sensor/
+SCRIPT_DIR = Path(__file__).resolve().parent          # .../TRC2027/tools/
+SENSOR_DIR = SCRIPT_DIR.parent / "sensor"             # .../TRC2027/sensor/
 if str(SENSOR_DIR) not in sys.path:
     sys.path.insert(0, str(SENSOR_DIR))
  
@@ -91,23 +91,37 @@ def gps_thread_func(gps_obj: MicropyGPS, port: str, baudrate: int):
         return
  
     try:
-        with serial.Serial(port, baudrate, timeout=1.0) as ser:
+        with serial.Serial(port, baudrate, timeout=10) as ser:
             print(f"[GPS] Serial open: {port} @ {baudrate} bps")
+            
+            # 最初の1行目は中途半端なデータである可能性があるため読み飛ばす
+            ser.readline()
+            
             while True:
                 try:
-                    line = ser.readline().decode("ascii", errors="replace")
-                    for char in line:
+                    sentence = ser.readline().decode('utf-8')
+                    if sentence == "":
+                        continue
+                    if sentence[0] != '$':  # 先頭が '$' でなければ捨てる
+                        continue
+                        
+                    for char in sentence:
                         gps_obj.update(char)
-                    if gps_obj.valid:
+                    
+                    # ちゃんと解析できたデータがある程度たまったらグローバルを更新
+                    if gps_obj.clean_sentences > 20:
                         lat_raw = gps_obj.latitude
                         lng_raw = gps_obj.longitude
-                        # ddm フォーマット: [deg, decimal_minutes, hemisphere]
-                        gps_lat = lat_raw[0] + lat_raw[1] / 60.0
-                        if lat_raw[2] == 'S':
+                        
+                        # location_formatting='dd' の場合は [deg, hemisphere] の形式
+                        gps_lat = lat_raw[0]
+                        if lat_raw[1] == 'S':
                             gps_lat = -gps_lat
-                        gps_lng = lng_raw[0] + lng_raw[1] / 60.0
-                        if lng_raw[2] == 'W':
+                            
+                        gps_lng = lng_raw[0]
+                        if lng_raw[1] == 'W':
                             gps_lng = -gps_lng
+                            
                         gps_speed = gps_obj.speed[0]      # ノット
                         gps_sats  = gps_obj.satellites_in_use
                 except Exception as e:
@@ -177,7 +191,8 @@ def main():
         sys.exit(1)
  
     # ---- GPS 初期化 ----
-    gps_obj    = MicropyGPS(local_offset=9, location_formatting='ddm')  # JST +9h
+    # 元のコードに合わせて location_formatting を 'dd' に設定
+    gps_obj    = MicropyGPS(local_offset=9, location_formatting='dd')  # JST +9h
     gps_thread = threading.Thread(
         target=gps_thread_func,
         args=(gps_obj, GPS_PORT, GPS_BAUDRATE),
@@ -235,9 +250,6 @@ def main():
                 gyro = [0.0, 0.0, 0.0]
  
             # --- 速度積分 ---
-            # 合成加速度ノルムから 1G を差し引き、落下加速度を近似する。
-            # 自由落下中: acc_norm ≈ 0  → fall_acc ≈ -9.81  (加速フェーズ)
-            # 終端速度時: acc_norm ≈ 9.81 → fall_acc ≈ 0    (等速フェーズ)
             now = time.time()
             dt  = now - prev_time
             prev_time = now
@@ -324,8 +336,6 @@ def main():
         except Exception as e:
             print(f"[ERROR] CSV 保存失敗: {e}")
  
- 
 # ===========================================================================
 if __name__ == "__main__":
     main()
- 

@@ -2,16 +2,16 @@
 bno055_calibrate.py
 ===================
 本番前に BNO055 をしっかりキャリブレーションし、その結果を
-config/bno055_calib.json に保存するツール。main6.py は起動時 (Phase0) に
+config/bno055_calib.json に保存するツール。本番 (main/main.py) は起動時 (Phase0) に
 このファイルを読み込んで BNO055 に書き戻す。
 
-TRC2027/test/bno055_calibrate.py
+TRC2027/tools/bno055_calibrate.py
 
 使い方:
     cd ~/TRC2027
-    python3 test/bno055_calibrate.py            # 4 項目すべて 3 になったら自動で保存
-    python3 test/bno055_calibrate.py --partial  # Ctrl+C で止めたとき Gyro/Mag が 3 なら保存
-    python3 test/bno055_calibrate.py --show     # 保存済みのプロファイルを表示するだけ
+    python3 tools/bno055_calibrate.py            # 4 項目すべて 3 になったら自動で保存
+    python3 tools/bno055_calibrate.py --partial  # Ctrl+C で止めたとき Gyro/Mag が 3 なら保存
+    python3 tools/bno055_calibrate.py --show     # 保存済みのプロファイルを表示するだけ
 
 キャリブレーションのやり方 (機体に取り付けた状態で、機体ごと手で持って行う):
     Gyro : 数秒間、机に置いて動かさない
@@ -28,11 +28,12 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "sensor"))
 sys.path.insert(0, str(ROOT / "main"))
 
-import bno_calib            # noqa: E402
-import main6 as M           # noqa: E402  (設定値と set_bno_orientation を共用。import だけでは何も動かない)
+from mission import config as C                    # noqa: E402  (sensor/ も import パスに入る)
+from mission.hardware import set_bno_orientation   # noqa: E402
+from BNO055 import BNO055                          # noqa: E402
+import bno_calib                                   # noqa: E402
 
 HINT = {
     "Sys": "他の 3 つがそろうと上がる",
@@ -55,7 +56,7 @@ def show(path):
 
 def main():
     ap = argparse.ArgumentParser(description="BNO055 をキャリブレーションして結果を保存する")
-    ap.add_argument("--out", default=str(M.BNO_CALIB_FILE), help="保存先")
+    ap.add_argument("--out", default=str(C.BNO_CALIB_FILE), help="保存先")
     ap.add_argument("--partial", action="store_true",
                     help="Ctrl+C で止めたとき、Gyro と Mag が 3 なら保存する (Acc が 3 にならない場合)")
     ap.add_argument("--load", action="store_true", help="保存済みのプロファイルを書き戻してから始める")
@@ -65,11 +66,11 @@ def main():
     if args.show:
         return show(args.out)
 
-    bno = M.BNO055()
-    if not bno.setUp(operation_mode=M.BNO055.OPERATION_MODE_NDOF):
+    bno = BNO055()
+    if not bno.setUp(operation_mode=BNO055.OPERATION_MODE_NDOF):
         print("BNO055 を初期化できません。配線 (I2C) を確認してください。")
         return 1
-    M.set_bno_orientation(bno, M.BNO_ORIENTATION)
+    set_bno_orientation(bno, C.BNO_ORIENTATION)
     if args.load:
         data, info = bno_calib.load_profile(args.out)
         if data is not None:
@@ -103,7 +104,7 @@ def main():
     if not bno_calib.is_plausible(data):
         print("読み出した値が不正です。保存しませんでした。")
         return 1
-    bno_calib.save_profile(args.out, data, status, note="test/bno055_calibrate.py で作成")
+    bno_calib.save_profile(args.out, data, status, note="tools/bno055_calibrate.py で作成")
     print(f"保存しました: {args.out}")
     show(args.out)
     return 0

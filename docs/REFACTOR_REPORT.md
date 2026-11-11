@@ -1,5 +1,7 @@
 # REFACTOR_REPORT: main6.py の分割 と 改善 (2026-11-10)
 
+> **2026-11-11 追記**: ファイルを整理したため、この報告書に出てくるパスの一部は今は存在しません。`main2.py` / `main6.py` は削除 (中身は `main/main.py` + `main/mission/`)、`test/test_phase5_live.py` → `tools/phase5_live.py`、`test/bno055_calibrate.py` → `tools/bno055_calibrate.py`、`test/test_phase5_camera.py` → `test/test_phase5_sim.py`、`test/test_main6_improvements.py` → `test/test_phase4_sim.py`。現在の構成はリポジトリ直下の `README.md` を参照。古いファイルは git の履歴から取り出せます。
+
 ブランチ: `feature/refactor-stuck-recovery`
 コミット: ① バックアップ (`43f14e3`) → ② 分割のみ・動作変更なし (`022b8ea`) → ③ 改善 (このコミット)
 

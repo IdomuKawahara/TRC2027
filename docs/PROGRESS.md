@@ -36,3 +36,14 @@
 - [x] 回帰スイート一式: flow 16 / equivalence 42 / stuck 19 / heading 9 / goal_vision 51 → 全部 OK
 - [x] REFACTOR_REPORT.md 作成
 - [x] コミット → push (feature/refactor-stuck-recovery)
+
+## 整理 (2026-11-11)
+- [x] 削除: main2〜6.py・リファクタ前バックアップ・runtest.py / sensor の重複 (GPS2, GPStest, motor_thread, test_avoid, test_fall2) /
+      test の試作版 (test_main*.py 16 本, test_GPSrun*.py 8 本, guided_navigation.py, test_fall*, test_finishv*, test_GPS, test_avoid/go/straight,
+      空ファイル 2 本, test_mission_equivalence.py)。すべて git の履歴に残っている
+- [x] 移動: 実機の道具 → tools/ (phase5_live.py, bno055_calibrate.py, finishv2.py, motor_test.py, led_test.py)、
+      SSH/Wi-Fi 試験 → tools/network/、報告書 → docs/
+- [x] test_phase5_camera.py → test_phase5_sim.py、test_main6_improvements.py → test_phase4_sim.py
+      (main2/main6 ではなく mission パッケージを直接テストするように変更)
+- [x] test/run_all.py を追加。整理後に全テスト 137 件 OK
+- [x] README (ファイル一覧)・FIELD_CHECKLIST・PHASE5_GUIDE のパスを更新、リポジトリ直下に README.md を追加

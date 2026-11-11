@@ -1,9 +1,9 @@
 """
-test_main6_improvements.py
-===========================
-main/main6.py の改修点のテスト (実機のモータ・GPIO・I2C・カメラには触れない)。
+test_phase4_sim.py
+==================
+Phase4 (GPS 誘導) まわりのテスト (実機のモータ・GPIO・I2C・カメラには触れない)。
 
-    python3 test/test_main6_improvements.py
+    python3 test/test_phase4_sim.py
 
   * BNO055 キャリブレーションプロファイルの読み書き (偽のレジスタ)
   * set_bno_orientation の修正 (Axis Remap が実際に書き込まれるか)
@@ -24,9 +24,10 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "sensor"))
-sys.path.insert(0, str(ROOT / "main"))
-import main6 as M          # noqa: E402
+sys.path.insert(0, str(ROOT / "test"))
+import mission_facade      # noqa: E402
+# mission パッケージを「M.名前」で読み書きする (差し替えは全モジュールに効く)
+M = mission_facade.MissionFacade()
 import goal_vision as gv   # noqa: E402
 import bno_calib           # noqa: E402
 

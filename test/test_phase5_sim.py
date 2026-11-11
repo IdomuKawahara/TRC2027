@@ -1,11 +1,11 @@
 """
-test_phase5_camera.py
-=====================
-main/main2.py の Phase5 (phase5_camera_approach) を、モータ・超音波・カメラを
+test_phase5_sim.py
+==================
+Phase5 (main/mission/phase5_camera.py の phase5_camera_approach) を、モータ・超音波・カメラを
 すべて偽物 (モック) に差し替えた簡易シミュレーションで通しテストする。
 実機のモータ・GPIO・カメラには一切触れない。
 
-    python3 test/test_phase5_camera.py -v
+    python3 test/test_phase5_sim.py
 
 仮想世界:
   * ゴール (赤いコーン) の機体から見た方位 angle [deg] (+ = 右) と距離 dist [m]
@@ -24,10 +24,13 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "sensor"))
-sys.path.insert(0, str(ROOT / "main"))
-import main2 as M          # noqa: E402  (import してもハードウェアは初期化されない)
+sys.path.insert(0, str(ROOT / "test"))
+import mission_facade      # noqa: E402
 import goal_vision as gv   # noqa: E402
+
+# mission パッケージの設定値・状態・関数を「M.名前」で読み書きする (差し替えは全モジュールに効く)。
+# import してもハードウェアは初期化されない
+M = mission_facade.MissionFacade()
 
 W, H = 320, 240
 HFOV = 62.2                       # IMX219 の水平画角 [deg]
@@ -157,7 +160,7 @@ class FakeSonar:
 
 class FakeBNO:
     """偽 BNO055: 機体の方位 world.heading に対応する地磁気ベクトルを返す
-    (main2.calc_azimuth() に通すと heading になる)。"""
+    (calc_azimuth() に通すと heading になる)。"""
     def __init__(self, world, broken=False):
         self.world = world
         self.broken = broken

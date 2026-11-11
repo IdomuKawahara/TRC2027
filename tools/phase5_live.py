@@ -1,9 +1,9 @@
 """
-test_phase5_live.py
-===================
+phase5_live.py
+==============
 Phase5 (カメラ色検知による最終接近) だけを実機で試すためのテストツール。
 
-TRC2027/test/test_phase5_live.py
+TRC2027/tools/phase5_live.py
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 モード:
@@ -13,12 +13,12 @@ TRC2027/test/test_phase5_live.py
   --drive            … main/main.py (mission パッケージ) の phase5_camera_approach() をそのまま実行する。
                        ★モータが動く★ 機体を床に置き、周りに人や物がないことを確認すること。
 
-使い方 (詳しくは test/README_phase5_test.md):
+使い方 (詳しくは docs/PHASE5_GUIDE.md):
     cd ~/TRC2027
-    python3 test/test_phase5_live.py                   # 検知モード (超音波あり)
-    python3 test/test_phase5_live.py --no-sonar        # 検知モード (カメラだけ)
-    python3 test/test_phase5_live.py --no-shape        # コーン以外の赤い物で試すとき
-    python3 test/test_phase5_live.py --drive --timeout 60   # 本番と同じ Phase5 (モータ動作)
+    python3 tools/phase5_live.py                   # 検知モード (超音波あり)
+    python3 tools/phase5_live.py --no-sonar        # 検知モード (カメラだけ)
+    python3 tools/phase5_live.py --no-shape        # コーン以外の赤い物で試すとき
+    python3 tools/phase5_live.py --drive --timeout 60   # 本番と同じ Phase5 (モータ動作)
   終了は Ctrl+C
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -287,7 +287,7 @@ def run_detect(args):
 
 
 # ===========================================================================
-# 走行モード (main6.py の Phase5 をそのまま実行。モータが動く)
+# 走行モード (本番の Phase5 をそのまま実行。モータが動く)
 # ===========================================================================
 
 def run_drive(args):
@@ -353,7 +353,7 @@ def main():
     ap = argparse.ArgumentParser(
         description="Phase5 (カメラ色検知による最終接近) の単体テスト。既定ではモータを動かさない。")
     ap.add_argument("--drive", action="store_true",
-                    help="★モータが動く★ main6.py の Phase5 をそのまま実行する")
+                    help="★モータが動く★ 本番 (main/mission) の Phase5 をそのまま実行する")
     ap.add_argument("--yes", action="store_true", help="--drive の確認入力を省略する")
     ap.add_argument("--timeout", type=float, default=0,
                     help="--drive 時の Phase5 タイムアウト [s] (既定: main6 の設定値)")

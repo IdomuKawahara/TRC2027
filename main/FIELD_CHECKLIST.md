@@ -1,7 +1,7 @@
 # 実機ができたらやること (チェックリスト)
 
 対象: `main/main.py` + `main/mission/` (最新の本番用プログラム。2026-11-10 に main6.py を分割・改善)
-作成: 2026-11-08  更新: 2026-11-10
+作成: 2026-11-08  更新: 2026-11-11 (ファイル整理に合わせてパスを更新)
 
 上から順に進めてください。各項目の **合格の目安** を満たしたら ☑ を付け、
 調整した設定値はメモ欄に書き残してください (次の人が同じ調整をやり直さなくて済むように)。
@@ -20,7 +20,7 @@
 |---|---|---|---|
 | ☐ | プログラムを最新にする | `cd ~/TRC2027 && git pull` | エラーが出ない |
 | ☐ | ライブラリがそろっているか | `python3 -c "import cv2, picamera2, numpy; print(cv2.__version__)"` | `4.10.0` などが表示される |
-| ☐ | ソフトのテストが全部通るか | `python3 test/test_goal_vision.py`<br>`python3 test/test_heading_fusion.py`<br>`python3 test/test_main6_improvements.py`<br>`python3 test/test_phase5_camera.py` | すべて最後に `OK` |
+| ☐ | ソフトのテストが全部通るか | `python3 test/run_all.py` (数分) | 最後の一覧がすべて ✅ |
 | ☐ | カメラが認識されるか | `rpicam-hello --list-cameras` | `imx219` が表示される |
 | ☐ | I2C センサが見えるか | `i2cdetect -y 1` | `28` (BNO055) と `77` (BMP180) が表示される |
 | ☐ | 目標座標を設定 | `main/mission/config.py` の `TARGET_LAT` / `TARGET_LNG` | ゴール地点で測った値 (下の 5 章) |
@@ -38,7 +38,7 @@
 | ☐ | **超音波の不感帯** | 同上。手をゆっくり近づける | **何 cm から測れなくなるか** を記録 (HC-SR04 は 2〜3cm 前後) |
 | ☐ | GPS | `python3 sensor/GPS.py` (屋外で) | 数分以内に衛星 4 個以上、緯度経度が出る |
 | ☐ | BNO055 | `python3 sensor/BNO055.py` | 値が出る。機体を回すと地磁気の値が変わる |
-| ☐ | LED | `python3 test/test_LED.py` | 5 秒点灯する |
+| ☐ | LED | `python3 tools/led_test.py` | 5 秒点灯する |
 
 メモ (不感帯 ___ cm):
 
@@ -49,7 +49,7 @@
 **モータ・電池を載せた本番と同じ状態の機体** を手で持って行います。モータや電池の磁気ごと補正されます。
 
 ```bash
-python3 test/bno055_calibrate.py
+python3 tools/bno055_calibrate.py
 ```
 
 | ☐ | やること | 合格の目安 |
@@ -58,10 +58,10 @@ python3 test/bno055_calibrate.py
 | ☐ | 機体を 6 方向 (上・下・左・右・前・後ろを上にする) に向けて数秒ずつ静止 | `Acc=3` |
 | ☐ | 空中で大きく 8 の字を描くように、ゆっくり回す | `Mag=3` |
 | ☐ | 4 つとも 3 になると自動で保存 | `保存しました: .../config/bno055_calib.json` |
-| ☐ | 保存内容を確認 | `python3 test/bno055_calibrate.py --show` で値が表示される |
+| ☐ | 保存内容を確認 | `python3 tools/bno055_calibrate.py --show` で値が表示される |
 
 - 鉄の机・PC・スマホ・工具の近くは避ける。
-- Acc がどうしても 3 にならないときは `python3 test/bno055_calibrate.py --partial` で起動し、Gyro と Mag が 3 になったところで Ctrl+C。
+- Acc がどうしても 3 にならないときは `python3 tools/bno055_calibrate.py --partial` で起動し、Gyro と Mag が 3 になったところで Ctrl+C。
 - 機体の部品 (電池・モータ・配線) の位置を変えたら、**もう一度やり直す**。
 - 作ったファイル `config/bno055_calib.json` はコミットしておくと、別の Pi でも使える。
 
@@ -75,7 +75,7 @@ python3 test/bno055_calibrate.py
 
 | ☐ | やること | コマンド | 合格の目安 |
 |---|---|---|---|
-| ☐ | **カメラの向き** | 機体に **上下逆** に取り付けた状態で<br>`python3 test/test_phase5_live.py --no-sonar` | コーンを機体の **右** に置くと `Position` の `O` が右、判断が「右へ旋回」 |
+| ☐ | **カメラの向き** | 機体に **上下逆** に取り付けた状態で<br>`python3 tools/phase5_live.py --no-sonar` | コーンを機体の **右** に置くと `Position` の `O` が右、判断が「右へ旋回」 |
 | ☐ | **赤と青が入れ替わっていないか** | 同上で、赤いコーンと青い物を写す | 赤いコーンだけ `Det=1`。青い物で `Det=1` になるなら `--swap-rb` を試し、OK なら `CAM_SWAP_RB = True` |
 | ☐ | 何 m 先から見えるか | コーンを 2m, 5m, 8m, 10m, 15m に置く | 少なくとも **8〜10m** で `Det=1` (Phase4 のカメラ見張りは 10m から始まる) |
 | ☐ | 形の判定 (`Shape`) | 同上 | 本物のコーンで `Shape` が 0.25 以上。下回るなら `CAM_SHAPE_MIN_SCORE` を下げる |
@@ -94,7 +94,7 @@ python3 test/bno055_calibrate.py
 
 | ☐ | やること | コマンド | 合格の目安 |
 |---|---|---|---|
-| ☐ | **機体の先端がコーンに触れた状態で超音波が何 m か** | `python3 test/test_phase5_live.py` (超音波あり) でコーンに機体をくっつける | 値を記録。`GOAL_SONAR_DIST_M` (既定 0.08m) をこの値 + 2〜3cm に設定 |
+| ☐ | **機体の先端がコーンに触れた状態で超音波が何 m か** | `python3 tools/phase5_live.py` (超音波あり) でコーンに機体をくっつける | 値を記録。`GOAL_SONAR_DIST_M` (既定 0.08m) をこの値 + 2〜3cm に設定 |
 | ☐ | 確認の判定 | コーンを 1m → 30cm → 10cm → 接触 と近づける | 近づくと「停止→超音波で0m確認」→ 接触で `CONFIRMED` (超音波が測れない距離なら `BLIND`) |
 | ☐ | 超音波がコーンに当たるか | 超音波の高さ・向きを確認 | コーンの胴体に当たる高さ。上を素通りする高さだと 0m 確認ができない |
 | ☐ | 不感帯対策の後退距離 | 1 章で測った不感帯 | 不感帯が大きい (5cm 以上) なら `GOAL_BACKOFF_SEC` を長くする |
@@ -107,8 +107,8 @@ python3 test/bno055_calibrate.py
 
 | ☐ | やること | コマンド | 合格の目安 |
 |---|---|---|---|
-| ☐ | ゴール地点で GPS を測る | `python3 main/finishv2.py` (または `python3 sensor/GPS.py`) を数分動かす | 衛星 6 個以上。値が落ち着いたところを何回か記録して平均 |
-| ☐ | `TARGET_LAT` / `TARGET_LNG` に設定 | `main/main6.py` | |
+| ☐ | ゴール地点で GPS を測る | `python3 tools/finishv2.py` (または `python3 sensor/GPS.py`) を数分動かす | 衛星 6 個以上。値が落ち着いたところを何回か記録して平均 |
+| ☐ | `TARGET_LAT` / `TARGET_LNG` に設定 | `main/mission/config.py` | |
 
 メモ (緯度 ______ 経度 ______):
 
@@ -117,7 +117,7 @@ python3 test/bno055_calibrate.py
 ## 6. ★モータが動きます★ Phase5 だけを走らせる
 
 ```bash
-python3 test/test_phase5_live.py --drive --timeout 60
+python3 tools/phase5_live.py --drive --timeout 60
 ```
 `yes` と入力すると 3 秒後に開始します。
 
@@ -181,7 +181,7 @@ python3 main/main.py
 
 ## 9. 本番前に対応した方がよいこと (コード側・未対応)
 
-Phase1〜5 の見直しで見つかった、**まだ直していない** 問題です。詳しくは `REPORT.md` を参照。
+Phase1〜5 の見直しで見つかった、**まだ直していない** 問題です。詳しくは `docs/REPORT.md` を参照。
 
 | 優先度 | 問題 | 内容 |
 |---|---|---|
