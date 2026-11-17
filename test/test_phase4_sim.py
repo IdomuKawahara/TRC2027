@@ -25,6 +25,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "test"))
+import _testenv            # noqa: E402,F401  (本番機の設定でテストする)
 import mission_facade      # noqa: E402
 # mission パッケージを「M.名前」で読み書きする (差し替えは全モジュールに効く)
 M = mission_facade.MissionFacade()

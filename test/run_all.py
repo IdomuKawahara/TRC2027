@@ -19,6 +19,7 @@ HERE = Path(__file__).resolve().parent
 
 TESTS = [
     ("test_mission_flow.py",    "main.py のフェーズ切り替え・偏角プリセット"),
+    ("test_vehicle.py",         "機体プロファイル (機体ごとの設定・キャリブレーション)"),
     ("test_heading_fusion.py",  "方位の融合 (地磁気 + GPS)"),
     ("test_goal_vision.py",     "カメラの色検知・超音波の 0m 判定"),
     ("test_stuck_recovery.py",  "スタック検知と回避"),

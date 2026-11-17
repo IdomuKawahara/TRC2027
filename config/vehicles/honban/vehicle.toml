@@ -1,0 +1,11 @@
+# 本番機 (大会用の機体) のプロファイル
+#
+# 本番機は main/mission/config.py の値そのままで動かす。
+# 本番機の設定を変えるときは、ここではなく config.py を直接書き換えること
+# (このファイルの [overrides] は空のままにしておく)。
+
+[vehicle]
+description = "本番機 (大会用)"
+role = "competition"
+
+[overrides]

@@ -93,10 +93,56 @@ def is_plausible(data: bytes) -> bool:
     return d["acc_radius"] > 0 and d["mag_radius"] > 0
 
 
-def save_profile(path, data: bytes, calib_status=None, note: str = ""):
+PAGE_ID_REG = 0x07
+UNIQUE_ID_REG = 0x50          # ページ 1 の 0x50〜0x5F (16 バイト): センサ 1 個ごとに違う番号
+UNIQUE_ID_LEN = 16
+
+
+def read_unique_id(bno):
+    """BNO055 の固有 ID を 16 進文字列で返す。読めなければ None。
+    レジスタのページを 1 に切り替えて読むので、必ずページ 0 に戻す
+    (戻さないと、以降のセンサ値の読み取りがすべておかしくなる)。"""
+    uid = None
+    try:
+        bno._write_byte(PAGE_ID_REG, 0x01)
+        try:
+            raw = bytes(bno._read_byte(UNIQUE_ID_REG + i) for i in range(UNIQUE_ID_LEN))
+        finally:
+            bno._write_byte(PAGE_ID_REG, 0x00)
+        if any(raw) and not all(b == 0xFF for b in raw):
+            uid = raw.hex()
+    except Exception:
+        uid = None
+    return uid
+
+
+def check_profile_matches(meta: dict, vehicle: str = None, sensor_uid: str = None):
+    """
+    保存されたキャリブレーション結果が「今の機体・今のセンサ」のものかを確かめる。
+    別の機体の結果を書き込むと、方位がずれたまま「キャリブレーション済み」として
+    走ってしまうため。戻り値: (使ってよいか, 理由)
+      * ファイルに機体名があり、今の機体名と違う            → 使わない
+      * ファイルにセンサ ID があり、今のセンサの ID と違う  → 使わない
+      * 古い形式 (機体名もセンサ ID も無い) や、ID が読めない場合は使う
+    """
+    meta = meta or {}
+    saved_vehicle = meta.get("vehicle")
+    if saved_vehicle and vehicle and saved_vehicle != vehicle:
+        return False, f"別の機体 ({saved_vehicle}) のキャリブレーション結果です (今の機体: {vehicle})"
+    saved_uid = meta.get("sensor_uid")
+    if saved_uid and sensor_uid and saved_uid != sensor_uid:
+        return False, (f"別の BNO055 のキャリブレーション結果です "
+                       f"(保存時 …{saved_uid[-8:]} / 今のセンサ …{sensor_uid[-8:]})")
+    return True, "OK"
+
+
+def save_profile(path, data: bytes, calib_status=None, note: str = "",
+                 vehicle: str = None, sensor_uid: str = None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     obj = {
+        "vehicle": vehicle,
+        "sensor_uid": sensor_uid,
         "offsets": list(data),
         "decoded": decode(data),
         "calib_status_sys_gyro_acc_mag": list(calib_status) if calib_status else None,
@@ -108,16 +154,28 @@ def save_profile(path, data: bytes, calib_status=None, note: str = ""):
     tmp.replace(path)          # 書き込み途中で電源が落ちても壊れたファイルを残さない
 
 
-def load_profile(path):
-    """保存したプロファイルを読む。無い/壊れている/おかしい場合は (None, 理由)。"""
+def load_profile_full(path):
+    """保存したプロファイルを読む。戻り値: (22 バイト or None, 説明, メタ情報の dict)
+    無い/壊れている/おかしい場合は (None, 理由, {})。"""
     path = Path(path)
     if not path.exists():
-        return None, "ファイルなし"
+        return None, "ファイルなし", {}
     try:
         obj = json.loads(path.read_text(encoding="utf-8"))
         data = bytes(int(x) & 0xFF for x in obj["offsets"])
     except Exception as e:
-        return None, f"読み込み失敗: {e}"
+        return None, f"読み込み失敗: {e}", {}
     if not is_plausible(data):
-        return None, "内容が不正"
-    return data, f"保存日時 {obj.get('saved_at', '?')} 状態 {obj.get('calib_status_sys_gyro_acc_mag')}"
+        return None, "内容が不正", {}
+    meta = {"vehicle": obj.get("vehicle"), "sensor_uid": obj.get("sensor_uid"),
+            "saved_at": obj.get("saved_at"), "note": obj.get("note")}
+    info = f"保存日時 {obj.get('saved_at', '?')} 状態 {obj.get('calib_status_sys_gyro_acc_mag')}"
+    if obj.get("vehicle"):
+        info += f" 機体 {obj['vehicle']}"
+    return data, info, meta
+
+
+def load_profile(path):
+    """保存したプロファイルを読む。無い/壊れている/おかしい場合は (None, 理由)。"""
+    data, info, _ = load_profile_full(path)
+    return data, info

@@ -47,3 +47,12 @@
       (main2/main6 ではなく mission パッケージを直接テストするように変更)
 - [x] test/run_all.py を追加。整理後に全テスト 137 件 OK
 - [x] README (ファイル一覧)・FIELD_CHECKLIST・PHASE5_GUIDE のパスを更新、リポジトリ直下に README.md を追加
+
+## 機体プロファイル (2026-11-17)
+- [x] mission/vehicle.py: 機体の選択 (環境変数 → config/active_vehicle → 既定 honban)、vehicle.toml の読み込み、[overrides] の検証と適用
+- [x] config.py の末尾で適用。計算で決まる値 (WEAK_RATIO, 偏角) は計算し直す。BNO_CALIB_FILE は機体ごと
+- [x] bno_calib.py: 機体名と BNO055 固有 ID を保存し、違えば起動時に使わない
+- [x] phase0: 機体名・差分・試験用機体の警告を表示、ログのファイル名に機体名、BMP180_REQUIRED
+- [x] tools/vehicle.py (status/show/use/new/check), tools/vehicle_measure.py, bno055_calibrate.py を機体ごとの保存に
+- [x] 自動テストは常に本番機の設定 (test/_testenv.py)。test/test_vehicle.py 32 件
+- [x] docs/VEHICLES.md、README・FIELD_CHECKLIST 更新

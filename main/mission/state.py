@@ -31,6 +31,7 @@ g_gps_fix_time = None           # ★main6: GPS の値が最後に更新され�
 g_sonar_m    = None             # None = 測定失敗
 g_heading_est = None            # ★main6: 方位の融合器 (Phase4 で作り、Phase4 に戻っても学習結果を引き継ぐ)
 g_bno_profile_loaded = False    # ★main6: 起動時にキャリブレーションプロファイルを書き戻せたか
+g_bno_uid = None                # BNO055 の固有 ID (読めなければ None)。キャリブレーション結果がこのセンサのものかの確認用
 g_p4_camera = None              # ★main6: Phase4 でゴールを見つけたとき Phase5 に引き継ぐカメラ
 
 # ★追加: 地磁気ベクトルの平滑化 (EMA: 指数移動平均) 状態。

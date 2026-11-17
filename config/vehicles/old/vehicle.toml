@@ -1,0 +1,45 @@
+# 過去機体 (コードの確認用) のプロファイル
+#
+# この機体だけ config.py と違う値を [overrides] に書く。
+# 行頭の # を外すと有効になる。値は「例」なので、実物に合わせて書き換えること。
+# 書ける名前は main/mission/config.py にあるものだけ (打ち間違いは起動時にエラーになる)。
+# 確認: python3 tools/vehicle.py show old
+
+[vehicle]
+description = "過去機体 (コード確認用)"
+role = "test"            # 本番機ではないことの印。起動時に警告が出る
+
+[overrides]
+# ── 1. 配線 (BCM ピン番号) ──────────────────────────────────────────
+# 前進させたら後ろに進む   → その側の IN1 と IN2 を入れ替える
+# 右に曲がるはずが左に曲がる → A (右モータ) と B (左モータ) の組を丸ごと入れ替える
+# PIN_PWMA = 13
+# PIN_AIN1 = 6
+# PIN_AIN2 = 5
+# PIN_PWMB = 18
+# PIN_BIN1 = 24
+# PIN_BIN2 = 23
+# PIN_STBY = 11
+# PIN_TRIG = 8          # 超音波
+# PIN_ECHO = 7
+# LED_PIN  = 21
+
+# ── 2. センサの有無・取り付け向き ───────────────────────────────────
+# BMP180_REQUIRED = false   # 気圧センサが付いていない
+# BNO_ORIENTATION = 1       # BNO055 の取り付け向き 1〜4 (0°/90°/180°/270°)
+# CAM_ROTATE_180  = false   # カメラを正立で付けている (本番機は上下逆 = true)
+# CAM_P4_ENABLE   = false   # カメラが付いていない (Phase5 は自動で超音波スキャンに切り替わる)
+
+# ── 3. 走り方の違い (tools/vehicle_measure.py で測って決める) ─────────
+# FIG8_SPIN_SEC             = 8.0    # Phase3 のスピン。最低 1 回転できる秒数
+# CAM_SEARCH_TURN_SEC       = 0.25   # Phase5 の探索: 1 回で約 30° 回る秒数
+# CAM_SEARCH_PULSES_PER_LAP = 24     # 地磁気が読めないとき、1 周とみなす回数
+# HEADING_COG_MIN_SPEED_MPS = 0.30   # 走行速度の 6 割くらい。機体がこれより遅いと GPS 方位が使われない
+# STUCK_SPIN_GYRO_DPS       = 25.0   # 旋回速度の 3〜4 割
+
+# ── 4. 超音波の取り付け位置 ──────────────────────────────────────────
+# GOAL_SONAR_DIST_M = 0.08   # 機体の先端がゴールに触れたときの超音波の値 + 2〜3cm
+
+# ── 5. 地上試験を短くする (本番機の値は変わらない) ───────────────────
+# FALL_TIMEOUT_SEC = 20      # 落下検知の待ち時間 (本番は 420 秒)
+# LED_BLINK_SEC    = 2.0     # フェーズ切り替えの LED 点滅 (本番は 10 秒)

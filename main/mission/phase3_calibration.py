@@ -240,7 +240,8 @@ def phase3_calibration(bno: BNO055, motor: MotorController, led: LED, start_time
         try:
             data = bno_calib.read_offsets(bno)
             if bno_calib.is_plausible(data):
-                bno_calib.save_profile(C.BNO_CALIB_FILE, data, st.g_calib, note="Phase3 で自動保存")
+                bno_calib.save_profile(C.BNO_CALIB_FILE, data, st.g_calib, note="Phase3 で自動保存",
+                                       vehicle=C.VEHICLE_NAME, sensor_uid=st.g_bno_uid)
                 log(f"[Phase3] キャリブレーション結果を保存しました: {C.BNO_CALIB_FILE}")
         except Exception as e:
             log(f"[Phase3][WARN] キャリブレーション結果の保存に失敗: {e}", "WARN")

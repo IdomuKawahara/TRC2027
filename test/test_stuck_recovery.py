@@ -26,6 +26,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import _testenv            # noqa: E402,F401  (本番機の設定でテストする)
 import mission_facade                     # noqa: E402  (sys.path 設定)
 from mission import config as C           # noqa: E402
 from mission import state as st           # noqa: E402

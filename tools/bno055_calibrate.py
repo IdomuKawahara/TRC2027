@@ -45,6 +45,7 @@ HINT = {
 
 def show(path):
     data, info = bno_calib.load_profile(path)
+    print(f"機体: {C.VEHICLE_NAME}")
     if data is None:
         print(f"プロファイルなし / 読めない: {path} ({info})")
         return 1
@@ -66,11 +67,15 @@ def main():
     if args.show:
         return show(args.out)
 
+    print(f"機体: {C.VEHICLE_NAME} ({C.VEHICLE_DESCRIPTION})  保存先: {args.out}")
+    print("  ※ キャリブレーション結果は機体ごとに保存されます。違う機体なら先に "
+          "python3 tools/vehicle.py use <機体名> で切り替えてください\n")
     bno = BNO055()
     if not bno.setUp(operation_mode=BNO055.OPERATION_MODE_NDOF):
         print("BNO055 を初期化できません。配線 (I2C) を確認してください。")
         return 1
     set_bno_orientation(bno, C.BNO_ORIENTATION)
+    sensor_uid = bno_calib.read_unique_id(bno)
     if args.load:
         data, info = bno_calib.load_profile(args.out)
         if data is not None:
@@ -104,7 +109,8 @@ def main():
     if not bno_calib.is_plausible(data):
         print("読み出した値が不正です。保存しませんでした。")
         return 1
-    bno_calib.save_profile(args.out, data, status, note="tools/bno055_calibrate.py で作成")
+    bno_calib.save_profile(args.out, data, status, note="tools/bno055_calibrate.py で作成",
+                           vehicle=C.VEHICLE_NAME, sensor_uid=sensor_uid)
     print(f"保存しました: {args.out}")
     show(args.out)
     return 0

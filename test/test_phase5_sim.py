@@ -25,6 +25,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "test"))
+import _testenv            # noqa: E402,F401  (本番機の設定でテストする)
 import mission_facade      # noqa: E402
 import goal_vision as gv   # noqa: E402
 

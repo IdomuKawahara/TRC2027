@@ -40,6 +40,17 @@ def phase0_init() -> tuple:
     log("  NSE2026 ミッションシーケンス 開始")
     log(f"  PID={os.getpid()}  (nohup で SSH 切断耐性あり)")
     log(f"  目標座標: LAT={C.TARGET_LAT}  LNG={C.TARGET_LNG}")
+    log(f"  会場 (地磁気偏角): {C.MAG_SITE_RESOLVED}  偏角={C.MAG_DECLINATION}°")
+    # ── 機体プロファイル: どの機体の設定で動いているかを必ず表示する ──
+    src = {"env": "環境変数 CANSAT_VEHICLE", "file": "config/active_vehicle", "default": "未設定 → 既定"}[C.VEHICLE_SOURCE]
+    log(f"  機体: {C.VEHICLE_NAME}  ({C.VEHICLE_DESCRIPTION or '説明なし'})  [{src}]")
+    if C.VEHICLE_OVERRIDES:
+        log(f"  この機体だけの設定 {len(C.VEHICLE_OVERRIDES)} 個 (config.py との違い):")
+        for key, old, new in C.VEHICLE_OVERRIDES:
+            log(f"    {key} = {new!r}  (本番機の値: {old!r})")
+    if C.VEHICLE_ROLE != "competition":
+        log("  ★★★ これは【試験用の機体】の設定です。本番機では使わないでください ★★★", "WARN")
+        log("      本番機に戻すには: python3 tools/vehicle.py use honban", "WARN")
     log("=" * 62)
 
     # gpiozero バックエンド (全テストコードと統一)
@@ -48,7 +59,7 @@ def phase0_init() -> tuple:
     # ログ保存先
     C.LOG_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = C.LOG_DIR / f"mission_{ts}.csv"
+    log_path = C.LOG_DIR / f"mission_{C.VEHICLE_NAME}_{ts}.csv"   # どの機体のログか分かるように
     log(f"ログパス: {log_path}")
 
     # LED 初期化 (ミッション動作中は点灯)
@@ -73,11 +84,19 @@ def phase0_init() -> tuple:
     # ★main6: 事前に保存したキャリブレーションプロファイルを書き戻す
     #   (setUp のソフトウェアリセットで消えるので、必ず setUp・Axis Remap の後に行う)
     st.g_bno_profile_loaded = False
+    st.g_bno_uid = bno_calib.read_unique_id(bno)
+    log(f"[BNO055] センサ固有 ID: {st.g_bno_uid or '読めません'}")
     if C.BNO_CALIB_LOAD:
-        data, info = bno_calib.load_profile(C.BNO_CALIB_FILE)
+        data, info, meta = bno_calib.load_profile_full(C.BNO_CALIB_FILE)
+        # ★ 別の機体・別のセンサのキャリブレーション結果は書き込まない
+        #   (方位がずれたまま「キャリブレーション済み」として走ってしまうため)
+        ok, why = bno_calib.check_profile_matches(meta, C.VEHICLE_NAME, st.g_bno_uid)
         if data is None:
             log(f"[BNO055] キャリブレーションプロファイルなし ({info}: {C.BNO_CALIB_FILE}) "
                 f"→ Phase3 で通常どおりキャリブレーションします", "WARN")
+        elif not ok:
+            log(f"[BNO055][WARN] {why} → 使わずに Phase3 で通常どおりキャリブレーションします。"
+                f"この機体で tools/bno055_calibrate.py をやり直してください", "WARN")
         else:
             try:
                 bno_calib.write_offsets(bno, data)
@@ -88,20 +107,31 @@ def phase0_init() -> tuple:
 
     # BMP180
     log("BMP180 初期化中...")
-    bmp = BMP180(oss=3)
-    if not bmp.setUp():
-        log("BMP180 初期化失敗", "ERROR")
-        sys.exit(1)
-
-    # 基準気圧 (3 回平均)
-    log("基準気圧取得中...")
-    bp_list = []
-    for _ in range(3):
-        bmp.getTemperature()
-        bp_list.append(bmp.getPressure())
-        time.sleep(0.1)
-    base_pressure = sum(bp_list) / len(bp_list)
-    log(f"基準気圧 = {base_pressure:.2f} Pa")
+    bmp = None
+    base_pressure = None
+    try:
+        bmp = BMP180(oss=3)
+        bmp_ok = bool(bmp.setUp())
+    except Exception as e:
+        log(f"BMP180 初期化エラー: {e}", "WARN")
+        bmp_ok = False
+    if not bmp_ok:
+        if C.BMP180_REQUIRED:
+            log("BMP180 初期化失敗", "ERROR")
+            sys.exit(1)
+        # 気圧センサの無い機体 (vehicle.toml で BMP180_REQUIRED = false)
+        log("BMP180 が使えません。この機体では必須ではないので、気圧なしで続行します", "WARN")
+        bmp = None
+    else:
+        # 基準気圧 (3 回平均)
+        log("基準気圧取得中...")
+        bp_list = []
+        for _ in range(3):
+            bmp.getTemperature()
+            bp_list.append(bmp.getPressure())
+            time.sleep(0.1)
+        base_pressure = sum(bp_list) / len(bp_list)
+        log(f"基準気圧 = {base_pressure:.2f} Pa")
 
     # GPS
     gps_obj = MicropyGPS(local_offset=9, location_formatting='ddm')

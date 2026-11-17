@@ -346,7 +346,8 @@ HEADING_MIN_OFFSET_SAMPLES = 3    # [回]  これだけ学習してから「地�
 HEADING_OUTLIER_DEG       = 45.0  # [deg] 学習済みのずれからこれ以上外れた値は一時的な跳ねとして無視
 
 # --- ★main6: BNO055 キャリブレーションプロファイル ----------------------------
-BNO_CALIB_FILE = _ROOT_DIR / "config" / "bno055_calib.json"   # test/bno055_calibrate.py で作成
+# 保存先は機体ごと: config/vehicles/<機体名>/bno055_calib.json (このファイルの末尾で決まる)。
+# tools/bno055_calibrate.py で作成する
 BNO_CALIB_LOAD = True             # 起動時にプロファイルを書き戻す
 BNO_CALIB_AUTOSAVE = True         # Phase3 で Gyro/Mag が 3 になったら上書き保存する
 CALIB_TIMEOUT_WITH_PROFILE_SEC = 30.0  # [s] プロファイルを書き戻せたときの Phase3 の待ち時間上限
@@ -422,6 +423,11 @@ EARTH_RADIUS = 6371000.0   # [m]  Haversine計算用の地球平均半径
 # ログ
 LOG_DIR = _ROOT_DIR / "logs"
 
+# --- 機体によって付いていないことがあるセンサ --------------------------------
+BMP180_REQUIRED = True   # True: 気圧センサ BMP180 が初期化できなければ起動を中止する (従来どおり)。
+                         # 気圧センサの無い機体では、その機体の vehicle.toml で false にする
+                         # (今のミッションは気圧の値を使っていないので、無くても走行できる)
+
 # --- 地磁気の平滑化 (元: グローバル共有変数セクション) ----------------------
 MAG_EMA_ALPHA = 0.25   # [-] 0〜1。小さいほど平滑化が強い(応答は遅くなる)。
                        #     新規サンプルの反映比率: new = alpha*sample + (1-alpha)*old
@@ -471,3 +477,33 @@ PHASE_NAMES = {
 # ★実機で 1→2→3→4 の順に試し、Phase4 で目標へ正しく向かって前進する
 #   設定値をここに固定すること。
 BNO_ORIENTATION = 1
+
+
+# ===========================================================================
+# 機体プロファイル (★このファイルの最後に置くこと)
+# ===========================================================================
+# 機体ごとに違う値 (ピン・取り付け向き・パルス長など) は、このファイルを書き換えずに
+# config/vehicles/<機体名>/vehicle.toml の [overrides] に書く。ここでそれを読み込んで
+# 上の値を上書きする。どの機体として動くかの決め方は mission/vehicle.py を参照
+# (何も設定していなければ本番機 "honban" = このファイルの値そのまま)。
+from . import vehicle as _vehicle
+
+# 他の値から計算される値・定数は、機体プロファイルでは直接変えさせない
+_VEHICLE_PROTECTED = ("WEAK_RATIO", "MAG_DECLINATION", "MAG_SITE_RESOLVED", "MAG_SITE_PRESETS",
+                      "BNO_CALIB_FILE", "LOG_DIR", "PHASE_NAMES", "PHASE5_RETURN_GPS",
+                      "KNOTS_TO_MPS", "EARTH_RADIUS", "SOUND_SPEED")
+
+VEHICLE_NAME, VEHICLE_SOURCE = _vehicle.active_vehicle_name()
+_vehicle_profile = _vehicle.load_profile(VEHICLE_NAME)
+VEHICLE_DESCRIPTION = _vehicle_profile["description"]
+VEHICLE_ROLE = _vehicle_profile["role"]                  # "competition" (本番機) / "test"
+VEHICLE_DIR = _vehicle_profile["dir"]
+VEHICLE_OVERRIDES = _vehicle.apply_overrides(
+    globals(), _vehicle_profile["overrides"], protected=_VEHICLE_PROTECTED,
+    where=f"config/vehicles/{VEHICLE_NAME}/vehicle.toml")  # [(名前, 元の値, 新しい値), ...]
+
+# 上書きされた値から計算し直すもの
+WEAK_RATIO = SPEED_WEAK / RAMP_START_DUTY
+MAG_SITE_RESOLVED, MAG_DECLINATION = _resolve_mag_declination(
+    MAG_SITE, TARGET_LAT, TARGET_LNG, MAG_DECLINATION_OVERRIDE)
+BNO_CALIB_FILE = VEHICLE_DIR / "bno055_calib.json"       # 機体ごとのキャリブレーション結果

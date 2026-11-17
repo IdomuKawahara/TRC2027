@@ -213,6 +213,7 @@ TRC2027/
 |---|---|
 | **`main.py`** | **本番の入口。フェーズの切り替えだけ** (Phase0 → 1 → 2 → 3 → 4 ⇄ 5) |
 | **`mission/config.py`** | **設定値はすべてここ** (目標座標・会場の偏角・各フェーズの閾値・ピン番号)。実地で調整するのはこのファイルだけ |
+| `mission/vehicle.py` | 機体プロファイルの読み込み (config.py の最後で使われる) |
 | `mission/state.py` | フェーズ間で共有する状態 (センサ最新値 `g_*`・現在フェーズ・ログバッファ) |
 | `mission/logger.py` | ログ出力・CSV 保存・LED 点滅 |
 | `mission/hardware.py` | GPS 受信・超音波 (SonarSensor)・モータ (MotorController)・BNO055 の取り付け向き設定 |
@@ -245,8 +246,10 @@ TRC2027/
 
 | ファイル | 何をするか | モータ |
 |---|---|---|
+| `vehicle.py` | **機体プロファイル** の確認・切り替え・新規作成。本番前は `check` で本番機の設定か確認 (`docs/VEHICLES.md`) | 動かない |
+| `vehicle_measure.py` | 機体の旋回・走行の速さを測り、その機体の `vehicle.toml` に書く値の目安を出す | **動く** |
 | `finishv2.py` | 全センサの値を表示。**ゴール座標を測るとき** に使う | 動かない |
-| `bno055_calibrate.py` | **本番前に** BNO055 をキャリブレーションして `config/bno055_calib.json` に保存 | 動かない |
+| `bno055_calibrate.py` | **本番前に** BNO055 をキャリブレーションして、今の機体の `config/vehicles/<機体名>/bno055_calib.json` に保存 | 動かない |
 | `phase5_live.py` | Phase5 だけを実機で試す。既定は検知だけ (方向・距離・判断を表示)。`--drive` で本物の Phase5 | 既定は動かない / `--drive` で動く |
 | `motor_test.py` | モータの前進・後退の動作確認 | 動く |
 | `led_test.py` | LED を 5 秒点灯 | — |
@@ -259,6 +262,7 @@ TRC2027/
 | ファイル | 何をテストするか |
 |---|---|
 | `test_mission_flow.py` | main.py のフェーズ切り替え・偏角プリセット |
+| `test_vehicle.py` | 機体プロファイル・機体ごとのキャリブレーション・Phase0 での扱い |
 | `test_heading_fusion.py` | 方位の融合 |
 | `test_goal_vision.py` | カメラの色検知・形の判定・超音波の 0m 判定 |
 | `test_stuck_recovery.py` | スタック検知と回避 (段差・轍・片輪空転・空転・壁) |
@@ -271,6 +275,7 @@ TRC2027/
 
 | ファイル | 内容 |
 |---|---|
+| `VEHICLES.md` | **機体プロファイル**: 過去機体など別の機体で動かす方法と、機体が違うと起きる問題への対策 |
 | `PHASE5_GUIDE.md` | Phase5 の仕組みと `tools/phase5_live.py` の使い方 |
 | `REFACTOR_REPORT.md` | main6.py を mission/ に分割した内容・設定値の対応表・スタック回避などの改善 |
 | `REPORT.md` | Phase5 をカメラ方式にしたときの調査・テスト結果 |
@@ -280,7 +285,9 @@ TRC2027/
 
 | ファイル / フォルダ | 何か |
 |---|---|
-| `config/bno055_calib.json` | BNO055 のキャリブレーション結果 (`tools/bno055_calibrate.py` で作る) |
+| `config/vehicles/<機体名>/vehicle.toml` | その機体だけの設定 (config.py との違い)。`honban` = 本番機、`old` = 過去機体 |
+| `config/vehicles/<機体名>/bno055_calib.json` | その機体の BNO055 キャリブレーション結果 (`tools/bno055_calibrate.py` で作る) |
+| `config/active_vehicle` | この Pi が今どの機体か (git には入らない。無ければ本番機) |
 | `logs/` | 走行ログ (CSV) と撮影画像 |
 | `test_images/` | カメラの動作確認画像 |
 | `discord.sh` / `discord.example` | Discord への通知用 |
