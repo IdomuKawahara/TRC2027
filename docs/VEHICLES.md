@@ -31,7 +31,7 @@ if VEHICLE == "old":
 
 1. `main/mission/config.py` の一番上を `VEHICLE = "old"` にする
 2. config.py の一番下の `if VEHICLE == "old":` の中に、過去機体で違う値を書く (下の 3 章)。例が `#` 付きで書いてあるので、行頭の `#` を外して値を直す
-3. `python3 tools/motor_test.py` で前進・後退の向きを確認
+3. `python3 tools/motor_test.py` で前進・後退・左右の向きを確認 (config.py のピン番号で動く)
 4. `python3 tools/bno055_calibrate.py` で **過去機体のキャリブレーションを取る** (保存先は自動で `config/bno055_calib_old.json` になります)
 5. `python3 tools/vehicle_measure.py` で旋回の速さを測る (★モータが動きます)。最後に「今の値 → 目安の値」の一覧が出て、「config.py に書き込みますか？」と聞かれるので、よければ `yes` と入力すると `if VEHICLE == "old":` の中に書き込まれる (`yes` 以外なら何も変えない)
 6. `python3 main/main.py` で走らせる。起動ログの最初に `機体: old`、変えた値の一覧、試験用機体の警告が出ます

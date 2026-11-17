@@ -1,67 +1,78 @@
-from gpiozero import Motor, PWMOutputDevice, OutputDevice  # OutputDevice を追加
-from gpiozero.pins.lgpio import LGPIOFactory
-from gpiozero import Device
-import time
+"""
+motor_test.py
+=============
+★モータが動きます★  キーボードでモータを動かし、前後・左右の向きを確かめる。
+
+本番のプログラム (main.py) と同じ部品 (mission.hardware.MotorController) と、
+main/mission/config.py のピン番号を使う。だから、
+  - ここで「前進」で前に進めば、main.py でも前に進む
+  - config.py の一番上の VEHICLE を "old" にすれば、過去機体のピン番号で動く
+(以前はこのファイルにピン番号を直接書いていて、本番のプログラムと前後が逆になっていた)
+
+    cd ~/TRC2027
+    python3 tools/motor_test.py
+
+キー:
+    W : 前進              S : 後退
+    A : 左旋回 (右モータだけ前進)    D : 右旋回 (左モータだけ前進)
+    Z : その場で左回転    C : その場で右回転   (左右のモータを逆に回す)
+    スペース : 停止        Q : 終了 (Ctrl+C でも止まる)
+
+向きがおかしいとき (config.py のピン番号を直す。過去機体なら if VEHICLE == "old": の中に書く):
+    W で後ろに進む              → 両方のモータで IN1 と IN2 を入れ替える
+    A で右モータが後ろに回る    → PIN_AIN1 と PIN_AIN2 を入れ替える
+    D で左モータが後ろに回る    → PIN_BIN1 と PIN_BIN2 を入れ替える
+    A で左のタイヤが回る (左右が逆) → A の組 (PWMA, AIN1, AIN2) と B の組 (PWMB, BIN1, BIN2) を入れ替える
+"""
 import sys
+import time
+from pathlib import Path
 
-# Use lgpio backend (works on Pi Zero 2 W with modern OS)
-Device.pin_factory = LGPIOFactory()
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "main"))
 
-# ===== Pin configuration (BCM numbering) =====
-# Converted from BOARD to BCM:
-#   BOARD 33 -> BCM 13 (PWMA)
-#   BOARD 29 -> BCM 5  (AIN1)
-#   BOARD 31 -> BCM 6  (AIN2)
-#   BOARD 18 -> BCM 18 (PWMB)
-#   BOARD 12 -> BCM 23 (BIN1)
-#   BOARD 16 -> BCM 24 (BIN2)
-pwm_a = PWMOutputDevice(13)  # PWMA
-pwm_b = PWMOutputDevice(18)  # PWMB
-motor_a = Motor(forward=5, backward=6)   # AIN1, AIN2
-motor_b = Motor(forward=23, backward=24)  # BIN1, BIN2
-stby = OutputDevice(11)                  # MOTOR_STBY (追加)
+from mission import config as C      # noqa: E402
 
-speed = 0.8  # 0.0〜1.0（80%相当）
+# キー → (MotorController のメソッド名, 表示, 正しいときの動き)
+KEYMAP = {
+    "w": ("forward",           "前進",             "両方のタイヤが前に回り、まっすぐ前に進む"),
+    "s": ("backward",          "後退",             "両方のタイヤが後ろに回り、後ろに進む"),
+    "a": ("turn_left_strong",  "左旋回",           "右のタイヤだけ前に回り、左に曲がる"),
+    "d": ("turn_right_strong", "右旋回",           "左のタイヤだけ前に回り、右に曲がる"),
+    "z": ("pivot_left",        "その場で左回転",   "右は前・左は後ろに回り、その場で左に回る"),
+    "c": ("pivot_right",       "その場で右回転",   "右は後ろ・左は前に回り、その場で右に回る"),
+    " ": ("stop",              "停止",             ""),
+}
 
-def stop():
-    pwm_a.value = 0
-    pwm_b.value = 0
-    motor_a.stop()
-    motor_b.stop()
-    stby.off()  # モーター停止後にSTBYをLOWにする (追加)
 
-def forward():
-    stby.on()  # モーター動作直前にSTBYをHIGHにする (追加)
-    pwm_a.value = speed
-    pwm_b.value = speed
-    motor_a.forward()
-    motor_b.forward()
+def pin_summary():
+    """今使うピン番号の表示 (config.py の値)。"""
+    return (f"右モータ (A): PWMA={C.PIN_PWMA}  AIN1={C.PIN_AIN1}  AIN2={C.PIN_AIN2}\n"
+            f"左モータ (B): PWMB={C.PIN_PWMB}  BIN1={C.PIN_BIN1}  BIN2={C.PIN_BIN2}\n"
+            f"STBY={C.PIN_STBY}")
 
-def backward():
-    stby.on()  # モーター動作直前にSTBYをHIGHにする (追加)
-    pwm_a.value = speed
-    pwm_b.value = speed
-    motor_a.backward()
-    motor_b.backward()
 
-def left():
-    stby.on()  # モーター動作直前にSTBYをHIGHにする (追加)
-    pwm_a.value = speed * 0.5
-    pwm_b.value = speed
-    motor_a.forward()
-    motor_b.forward()
-
-def right():
-    stby.on()  # モーター動作直前にSTBYをHIGHにする (追加)
-    pwm_a.value = speed
-    pwm_b.value = speed * 0.5
-    motor_a.forward()
-    motor_b.forward()
-
-# ===== キー入力（1文字取得）=====
-def get_key():
+def run(motor, get_key, out=print):
+    """キーを読んでモータを動かすループ (テストでは偽のモータとキーを渡す)。"""
     try:
-        import termios, tty
+        while True:
+            key = get_key()
+            if key in ("q", "\x03"):          # q / Ctrl+C (raw モードでは文字で来る)
+                break
+            if key in KEYMAP:
+                method, label, expect = KEYMAP[key]
+                getattr(motor, method)()
+                out(f"{label}" + (f"  … 正しければ: {expect}" if expect else ""))
+            time.sleep(0.05)
+    finally:
+        motor.stop()
+
+
+def _get_key():
+    """キーを 1 文字読む (Enter 不要)。端末でなければ 1 行読む。"""
+    try:
+        import termios
+        import tty
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         try:
@@ -70,26 +81,38 @@ def get_key():
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
         return ch.lower()
-    except:
-        return input().strip().lower()
+    except Exception:
+        line = sys.stdin.readline()
+        if not line:
+            return "q"
+        return (line.rstrip("\n")[:1] or " ").lower()
 
 
-# W/A/S/Dキー操作ループ
-try:
-    print("操作開始：W/A/S/D で移動、Space で停止、Q で終了")
-    while True:
-        cmd = get_key()
-        if cmd == 'w':   forward()
-        elif cmd == 's': backward()
-        elif cmd == 'a': left()
-        elif cmd == 'd': right()
-        elif cmd == ' ': stop()
-        elif cmd == 'q': break
-        time.sleep(0.1)
-except KeyboardInterrupt:
-    print("\n強制終了")
-finally:
-    stop()
-    pwm_a.close(); pwm_b.close()
-    motor_a.close(); motor_b.close()
-    stby.close()  # STBYピンのリソース解放 (追加)
+def main():
+    from gpiozero import Device
+    from gpiozero.pins.lgpio import LGPIOFactory
+    from mission import hardware
+
+    # MotorController のログ (ソフトスタートの経過など) は多いので、警告だけ表示する
+    hardware.log = lambda msg, level="INFO": print(f"[{level}] {msg}\r") if level != "INFO" else None
+
+    print(f"機体: {C.VEHICLE_NAME}  (config.py の VEHICLE)")
+    print(pin_summary())
+    print("★ モータが動きます。機体を浮かせるか床に置き、周りに人や物がないことを確認してください ★")
+    print("W/S: 前進/後退  A/D: 左/右旋回 (片輪)  Z/C: その場で左/右回転  スペース: 停止  Q: 終了")
+
+    Device.pin_factory = LGPIOFactory()
+    motor = hardware.MotorController()
+    try:
+        run(motor, _get_key, out=lambda s: print(s + "\r"))
+    except KeyboardInterrupt:
+        print("\n中断しました")
+    finally:
+        motor.stop()
+        motor.close()
+    print("停止しました")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

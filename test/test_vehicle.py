@@ -27,6 +27,7 @@ import bno_calib                          # noqa: E402
 
 sys.path.insert(0, str(ROOT / "tools"))
 import vehicle_measure as VM              # noqa: E402
+import motor_test as MT                   # noqa: E402
 
 SAMPLE = bytes([0xF6, 0xFF, 0x12, 0x00, 0xE8, 0xFF, 0x40, 0x01, 0x9C, 0xFF, 0x20, 0x00,
                 0xFE, 0xFF, 0x01, 0x00, 0x00, 0x00, 0xE8, 0x03, 0x8F, 0x02])
@@ -457,6 +458,55 @@ class TestMeasureWriteConfig(unittest.TestCase):
     def test_ask_yes_writes(self):
         self.assertTrue(VM.ask_and_write(self.values, "old", False, ask=lambda _: "yes", path=self.path))
         self.assertNotEqual(self.path.read_text(encoding="utf-8"), self.orig)
+
+class TestMotorTest(unittest.TestCase):
+    """tools/motor_test.py が本番と同じピン・同じ部品でモータを動かすこと (実機には触れない)。"""
+
+    def test_no_hardcoded_pins(self):
+        src = (ROOT / "tools" / "motor_test.py").read_text(encoding="utf-8")
+        self.assertNotIn("Motor(forward=", src, "ピン番号を直接書かず config.py を使う")
+        self.assertIn("MotorController", src)
+
+    def test_keys_call_real_motor_methods(self):
+        from mission.hardware import MotorController
+        for key, (method, _, _) in MT.KEYMAP.items():
+            with self.subTest(key=key):
+                self.assertTrue(callable(getattr(MotorController, method, None)), method)
+
+    def test_run_loop(self):
+        calls = []
+
+        class FakeMotor:
+            def __getattr__(self, name):
+                return lambda: calls.append(name)
+
+        keys = iter(["w", "a", "x", "d", " ", "s", "q", "w"])
+        out = []
+        MT.run(FakeMotor(), lambda: next(keys), out=out.append)
+        self.assertEqual(calls, ["forward", "turn_left_strong", "turn_right_strong", "stop", "backward", "stop"],
+                         "知らないキーは無視し、q で止まり、最後に必ず停止する")
+        self.assertIn("右のタイヤだけ", out[1])
+
+    def test_stops_even_on_error(self):
+        calls = []
+
+        class FakeMotor:
+            def forward(self): calls.append("forward")
+            def stop(self): calls.append("stop")
+
+        def keys():
+            if calls:
+                raise KeyboardInterrupt
+            return "w"
+        with self.assertRaises(KeyboardInterrupt):
+            MT.run(FakeMotor(), keys, out=lambda s: None)
+        self.assertEqual(calls, ["forward", "stop"])
+
+    def test_pin_summary_uses_config(self):
+        text = MT.pin_summary()
+        self.assertIn(f"AIN1={C.PIN_AIN1}", text)
+        self.assertIn(f"BIN2={C.PIN_BIN2}", text)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

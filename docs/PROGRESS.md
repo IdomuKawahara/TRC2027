@@ -65,3 +65,4 @@
 - [x] vehicle_measure.py は測定後に「今の値 → 目安」を見せ、yes のときだけ config.py に書き込む (読み込み直して確認、だめなら元に戻す)
 - [x] test_vehicle.py 28 件 (リポジトリの config.py が honban になっているかも確認する)
 - [x] docs/VEHICLE_SETUP_GUIDE.md: 過去機体はプログラムの確認用、本番機で値を調整する進め方の手順書
+- [x] tools/motor_test.py: ピン番号の直書き (本番と前後が逆だった) をやめ、config.py のピンと MotorController を使うように。A/D で片輪ずつ確認できる

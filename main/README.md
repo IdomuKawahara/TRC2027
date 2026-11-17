@@ -250,7 +250,7 @@ TRC2027/
 | `finishv2.py` | 全センサの値を表示。**ゴール座標を測るとき** に使う | 動かない |
 | `bno055_calibrate.py` | **本番前に** BNO055 をキャリブレーションして、今の機体の `config/bno055_calib_<機体名>.json` に保存 | 動かない |
 | `phase5_live.py` | Phase5 だけを実機で試す。既定は検知だけ (方向・距離・判断を表示)。`--drive` で本物の Phase5 | 既定は動かない / `--drive` で動く |
-| `motor_test.py` | モータの前進・後退の動作確認 | 動く |
+| `motor_test.py` | キーボードでモータを動かし、前後・左右の向きを確認。本番と同じ部品・config.py のピン番号を使う (`VEHICLE = "old"` なら過去機体のピン) | 動く |
 | `led_test.py` | LED を 5 秒点灯 | — |
 | `network/test_onoff*.py`, `rpi_blink.py`, `test_wifi.py` | SSH 接続の切り替え試験・SSH 切断中の LED 点滅・Wi-Fi 切り替えの事前試験 (PC 側で動かすものを含む。本番の main とは無関係) | — |
 
