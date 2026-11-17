@@ -19,7 +19,7 @@
 | ☐ | やること | コマンド / 方法 | 合格の目安 |
 |---|---|---|---|
 | ☐ | プログラムを最新にする | `cd ~/TRC2027 && git pull` | エラーが出ない |
-| ☐ | **どの機体の設定か** | `grep '^VEHICLE =' main/mission/config.py` | 載せている機体の名前になっている。過去機体なら `"old"`、**本番機なら `"honban"`** (詳しくは `docs/VEHICLES.md`) |
+| ☐ | **どの機体の設定か** | `grep '^VEHICLE =' main/mission/config.py` | 載せている機体の名前になっている。過去機体なら `"old"`、**本番機なら `"honban"`** (切り替え方は `docs/VEHICLE_SETUP_GUIDE.md`) |
 | ☐ | ライブラリがそろっているか | `python3 -c "import cv2, picamera2, numpy; print(cv2.__version__)"` | `4.10.0` などが表示される |
 | ☐ | ソフトのテストが全部通るか | `python3 test/run_all.py` (数分) | 最後の一覧がすべて ✅ |
 | ☐ | カメラが認識されるか | `rpicam-hello --list-cameras` | `imx219` が表示される |

@@ -372,15 +372,91 @@ class TestMeasureSuggestions(unittest.TestCase):
         self.assertEqual(out, {})
         self.assertTrue(notes)
 
-    def test_output_can_be_pasted_into_config(self):
-        """表示した行は、そのまま config.py の if VEHICLE == "old": の中に貼って読み込める。"""
+    def test_output_lines_are_indented(self):
         out, _ = VM.suggest(25.0, speed_mps=0.2)
-        text = VM.format_lines(out)
-        self.assertTrue(all(l.startswith("    ") for l in text.splitlines()))
-        rc, c = config_for("old", insert=[l.strip() for l in text.splitlines()])
-        self.assertEqual(rc, 0, c)
-        self.assertEqual(c["n"], len(out))
+        self.assertTrue(all(l.startswith("    ") for l in VM.format_lines(out).splitlines()))
 
+
+class TestMeasureWriteConfig(unittest.TestCase):
+    """vehicle_measure.py が、確認のあとで config.py (のコピー) に書き込む部分。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir=HERE)
+        pkg = Path(self.tmp.name) / "mission"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        for name in ("vehicle.py", "config.py"):
+            (pkg / name).write_text((ROOT / "main/mission" / name).read_text(encoding="utf-8"), encoding="utf-8")
+        self.path = pkg / "config.py"
+        self.orig = self.path.read_text(encoding="utf-8")
+        self.values, _ = VM.suggest(25.0, speed_mps=0.2)    # 遅い機体の目安 (値が今と違う)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def load(self, vehicle):
+        return VM.verify_config(self.path, vehicle, {})
+
+    def read_values(self, vehicle, keys):
+        code = ("import json, sys; sys.path.insert(0, %r)\nfrom mission import config as C\n"
+                "print(json.dumps({k: getattr(C, k) for k in %r} | {'_n': len(C.VEHICLE_OVERRIDES)}))"
+                ) % (str(self.path.parents[1]), list(keys))
+        p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                           env=dict(os.environ, CANSAT_VEHICLE=vehicle))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return json.loads(p.stdout.strip().splitlines()[-1])
+
+    def test_write_into_old_block(self):
+        ok, msg = VM.write_config(self.values, "old", competition=False, path=self.path)
+        self.assertTrue(ok, msg)
+        got = self.read_values("old", self.values)
+        self.assertEqual({k: got[k] for k in self.values}, self.values)
+        self.assertEqual(got["_n"], len(self.values))
+        h = self.read_values("honban", self.values)
+        self.assertEqual(h["_n"], 0, "本番機の値は変わらない")
+        self.assertEqual(h["FIG8_SPIN_SEC"], C.FIG8_SPIN_SEC)
+        text = self.path.read_text(encoding="utf-8")
+        self.assertIn("    CAM_SEARCH_TURN_SEC = ", text)
+        self.assertNotIn("    # CAM_SEARCH_TURN_SEC", text, "# 付きの例の行を置き換える")
+
+    def test_write_twice_replaces_not_duplicates(self):
+        VM.write_config(self.values, "old", competition=False, path=self.path)
+        v2 = dict(self.values, FIG8_SPIN_SEC=33.0)
+        ok, msg = VM.write_config(v2, "old", competition=False, path=self.path)
+        self.assertTrue(ok, msg)
+        text = self.path.read_text(encoding="utf-8")
+        self.assertEqual(text.count("    FIG8_SPIN_SEC = "), 1)
+        self.assertEqual(self.read_values("old", ["FIG8_SPIN_SEC"])["FIG8_SPIN_SEC"], 33.0)
+
+    def test_write_competition_values_keeps_comment(self):
+        ok, msg = VM.write_config({"FIG8_SPIN_SEC": 6.5}, "honban", competition=True, path=self.path)
+        self.assertTrue(ok, msg)
+        got = self.read_values("honban", ["FIG8_SPIN_SEC"])
+        self.assertEqual((got["FIG8_SPIN_SEC"], got["_n"]), (6.5, 0))
+        line = next(l for l in self.path.read_text(encoding="utf-8").splitlines() if l.startswith("FIG8_SPIN_SEC"))
+        self.assertIn("6.5", line)
+        self.assertIn("#", line, "説明のコメントは残す")
+
+    def test_bad_value_is_rolled_back(self):
+        ok, msg = VM.write_config({"PIN_AIN1": 5.0}, "old", competition=False, path=self.path)
+        self.assertFalse(ok)
+        self.assertIn("元に戻しました", msg)
+        self.assertEqual(self.path.read_text(encoding="utf-8"), self.orig)
+
+    def test_unknown_place_is_not_written(self):
+        ok, msg = VM.write_config({"NO_SUCH_SETTING": 1}, "honban", competition=True, path=self.path)
+        self.assertFalse(ok)
+        self.assertEqual(self.path.read_text(encoding="utf-8"), self.orig)
+
+    def test_ask_no_does_not_write(self):
+        for answer in ("no", "", "y", "はい"):
+            with self.subTest(answer=answer):
+                self.assertFalse(VM.ask_and_write(self.values, "old", False, ask=lambda _: answer, path=self.path))
+                self.assertEqual(self.path.read_text(encoding="utf-8"), self.orig)
+
+    def test_ask_yes_writes(self):
+        self.assertTrue(VM.ask_and_write(self.values, "old", False, ask=lambda _: "yes", path=self.path))
+        self.assertNotEqual(self.path.read_text(encoding="utf-8"), self.orig)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

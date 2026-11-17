@@ -13,11 +13,19 @@ vehicle_measure.py
     python3 tools/vehicle_measure.py --forward 5     # 加えて 5 秒前進して速度も測る (屋外・GPS が必要)
 
 機体を床に置き、周りに人や物がないことを確認してから。止めるときは Ctrl+C。
-表示された行を、main/mission/config.py の一番下の if VEHICLE == "<今の機体>": の中に写す
-(本番機で測ったときは、config.py の上の方の本番機の値を書き換える)。
+最後に目安の値と今の値を並べて表示し、「config.py に書き込みますか？」と聞く。
+yes と答えたときだけ main/mission/config.py に書き込む (それ以外は何も変えない)。
+  過去機体など : config.py の一番下の if VEHICLE == "<今の機体>": の中に書く
+  本番機       : config.py の上の方の本番機の値を書き換える
+書き込んだあと config.py を読み込み直して確かめ、失敗したら元に戻す。
+変わった所は git diff main/mission/config.py で見られる。
 """
 import argparse
+import datetime
 import math
+import os
+import re
+import subprocess
 import sys
 import threading
 import time
@@ -75,6 +83,124 @@ def format_lines(values: dict) -> str:
     return "\n".join(f"    {k} = {v!r}" for k, v in values.items())
 
 
+CONFIG_PATH = ROOT / "main" / "mission" / "config.py"
+SETTINGS_END = "from . import vehicle as _vehicle"     # config.py でこれより上が本番機の値
+
+
+class ConfigWriteError(Exception):
+    """config.py のどこに書けばよいか分からない (書き込まない)。"""
+
+
+def apply_to_config_text(text, vehicle, values, competition, stamp):
+    """
+    config.py の中身 (文字列) に values を書き込んだ新しい文字列を返す (純粋な関数。テストできる)。
+      competition=True : 上の方の「名前 = 値」の行の値だけを書き換える (行の説明コメントは残す)
+      competition=False: if VEHICLE == "<vehicle>": の中に書く。
+                         同じ名前の行 (# 付きの例も含む) があれば置き換え、無ければ pass の前に足す
+    """
+    lines = text.split("\n")
+    if competition:
+        end = next((i for i, l in enumerate(lines) if l.startswith(SETTINGS_END)), None)
+        if end is None:
+            raise ConfigWriteError("config.py の本番機の値の終わりが見つかりません")
+        for key, v in values.items():
+            pat = re.compile(rf"^({re.escape(key)}\s*=\s*)([^#]*?)(\s*#.*)?$")
+            hits = [i for i in range(end) if pat.match(lines[i])]
+            if len(hits) != 1:
+                raise ConfigWriteError(f"config.py で {key} = ... の行が {len(hits)} 個あります (1 個のはず)")
+            m = pat.match(lines[hits[0]])
+            lines[hits[0]] = f"{m.group(1)}{v!r}{m.group(3) or ''}"
+        return "\n".join(lines)
+
+    head = f'if VEHICLE == "{vehicle}":'
+    starts = [i for i, l in enumerate(lines) if l.rstrip() == head]
+    if len(starts) != 1:
+        raise ConfigWriteError(f"config.py に {head} が {len(starts)} 個あります (1 個のはず)")
+    start = starts[0]
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip() and not lines[i][0].isspace()),
+               len(lines))
+    for key, v in values.items():
+        new_line = f"    {key} = {v!r}    # vehicle_measure.py で測定 ({stamp})"
+        pat = re.compile(rf"^    (#\s*)?{re.escape(key)}\s*=")
+        hits = [i for i in range(start + 1, end) if pat.match(lines[i])]
+        active = [i for i in hits if not lines[i].lstrip().startswith("#")]
+        if len(active) > 1:
+            raise ConfigWriteError(f'{head} の中に {key} が {len(active)} 個あります')
+        if active or hits:
+            lines[(active or hits)[0]] = new_line
+        else:
+            passes = [i for i in range(start + 1, end) if lines[i].strip() == "pass"]
+            at = passes[-1] if passes else end
+            lines.insert(at, new_line)
+            end += 1
+    return "\n".join(lines)
+
+
+def _write_and_drop_cache(path, text):
+    """書き込んで、古い .pyc を消す (同じ秒・同じ大きさだと Python が古い方を使ってしまうため)。"""
+    import importlib.util
+    path.write_text(text, encoding="utf-8")
+    try:
+        Path(importlib.util.cache_from_source(str(path))).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def verify_config(path, vehicle, values):
+    """書き込んだ config.py を別のプロセスで読み込み、値が入っているか確かめる。戻り値: (ok, メッセージ)"""
+    code = ("import json, sys; sys.path.insert(0, %r)\n"
+            "from mission import config as C\n"
+            "print(json.dumps({k: getattr(C, k) for k in %r}))") % (str(Path(path).parents[1]), list(values))
+    env = dict(os.environ, CANSAT_VEHICLE=vehicle)
+    p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    if p.returncode != 0:
+        return False, (p.stderr.strip().splitlines() or ["読み込めません"])[-1]
+    got = __import__("json").loads(p.stdout.strip().splitlines()[-1])
+    bad = [k for k, v in values.items() if got.get(k) != v]
+    return (not bad), (f"値が入っていません: {bad}" if bad else "OK")
+
+
+def write_config(values, vehicle, competition, path=CONFIG_PATH):
+    """config.py に書き込み、読み込み直して確かめる。だめなら元に戻す。戻り値: (ok, メッセージ)"""
+    path = Path(path)
+    old = path.read_text(encoding="utf-8")
+    stamp = datetime.date.today().isoformat()
+    try:
+        new = apply_to_config_text(old, vehicle, values, competition, stamp)
+    except ConfigWriteError as e:
+        return False, f"書き込みませんでした: {e}"
+    _write_and_drop_cache(path, new)
+    ok, msg = verify_config(path, vehicle, values)
+    if not ok:
+        _write_and_drop_cache(path, old)
+        return False, f"書き込んだ config.py が読み込めなかったので元に戻しました: {msg}"
+    return True, "書き込みました"
+
+
+def ask_and_write(values, vehicle, competition, ask=input, path=CONFIG_PATH):
+    """今の値と目安を並べて見せ、yes のときだけ書き込む。戻り値: 書き込んだら True"""
+    if not values:
+        print("書き込む値はありません")
+        return False
+    where = ("config.py の上の方の【本番機の値】を書き換えます" if competition
+             else f'config.py の一番下の if VEHICLE == "{vehicle}": の中に書きます')
+    print(f"\n── 書き込む値 ({where}) ──")
+    for k, v in values.items():
+        print(f"  {k:28s} 今 {getattr(C, k)!r:>8}  →  {v!r}")
+    try:
+        ans = ask("この値を config.py に書き込みますか？ (yes/no): ").strip().lower()
+    except EOFError:
+        ans = ""
+    if ans != "yes":
+        print("書き込みませんでした (config.py は変えていません)")
+        return False
+    ok, msg = write_config(values, vehicle, competition, path)
+    print(msg)
+    if ok:
+        print("  変わった所: git diff main/mission/config.py   元に戻す: git checkout main/mission/config.py")
+    return ok
+
+
 # ── ここから下は実機 (モータ・BNO055・GPS) を使う ─────────────────────
 
 def measure_turn(bno, motor, direction, sec):
@@ -98,7 +224,7 @@ def main():
     ap = argparse.ArgumentParser(description="★モータが動く★ 機体の旋回・前進の速さを測る")
     ap.add_argument("--turn-sec", type=float, default=2.0, help="旋回を測る秒数 (片側)")
     ap.add_argument("--forward", type=float, default=0.0, help="前進して速度を測る秒数 (0 = 測らない。屋外・GPS 必要)")
-    ap.add_argument("--yes", action="store_true", help="確認の入力を省略")
+    ap.add_argument("--yes", action="store_true", help="モータを動かす前の確認を省略 (config.py への書き込みは必ず聞く)")
     args = ap.parse_args()
 
     print(f"機体: {C.VEHICLE_NAME}")
@@ -162,16 +288,10 @@ def main():
         motor.close()
 
     values, notes = suggest(min(rates), speed, min(pulse_rates))
-    if C.IS_COMPETITION_VEHICLE:
-        print("\n── 本番機の値の目安 (config.py の上の方の値を書き換える) ──")
-    else:
-        print(f'\n── config.py の一番下の if VEHICLE == "{C.VEHICLE_NAME}": の中に写す値の目安 ──')
-    print(format_lines(values) or "(なし)")
     for n in notes:
         print(f"注意: {n}")
-    print("\n今の値との比較:")
-    for k, v in values.items():
-        print(f"  {k}: 今 {getattr(C, k)!r} → 目安 {v!r}")
+    # 書き込みは必ず聞く (--yes でも省略しない)
+    ask_and_write(values, C.VEHICLE_NAME, C.IS_COMPETITION_VEHICLE)
     return 0
 
 

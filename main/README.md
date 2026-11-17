@@ -246,7 +246,7 @@ TRC2027/
 
 | ファイル | 何をするか | モータ |
 |---|---|---|
-| `vehicle_measure.py` | 機体の旋回・走行の速さを測り、config.py に写す値の目安を出す | **動く** |
+| `vehicle_measure.py` | 機体の旋回・走行の速さを測り、合う値の目安を表示。確認して `yes` なら config.py に書き込む | **動く** |
 | `finishv2.py` | 全センサの値を表示。**ゴール座標を測るとき** に使う | 動かない |
 | `bno055_calibrate.py` | **本番前に** BNO055 をキャリブレーションして、今の機体の `config/bno055_calib_<機体名>.json` に保存 | 動かない |
 | `phase5_live.py` | Phase5 だけを実機で試す。既定は検知だけ (方向・距離・判断を表示)。`--drive` で本物の Phase5 | 既定は動かない / `--drive` で動く |
@@ -274,6 +274,7 @@ TRC2027/
 
 | ファイル | 内容 |
 |---|---|
+| `VEHICLE_SETUP_GUIDE.md` | **機体のセットアップと切り替えの手順書** (過去機体 = プログラムの確認用、本番機 = 値の調整) |
 | `VEHICLES.md` | **機体の切り替え**: 過去機体など別の機体で動かす方法と、機体が違うと起きる問題への対策 |
 | `PHASE5_GUIDE.md` | Phase5 の仕組みと `tools/phase5_live.py` の使い方 |
 | `REFACTOR_REPORT.md` | main6.py を mission/ に分割した内容・設定値の対応表・スタック回避などの改善 |

@@ -9,7 +9,8 @@
 | ラズパイを一からセットアップしたい | [`main/README.md`](main/README.md) の手順書 |
 | 本番を動かしたい | `python3 main/main.py` |
 | 設定 (目標座標・会場・閾値) を変えたい | [`main/mission/config.py`](main/mission/config.py) だけ |
-| 過去機体など、別の機体で動かしたい | `main/mission/config.py` の一番上の `VEHICLE` (詳しくは [`docs/VEHICLES.md`](docs/VEHICLES.md)) |
+| 過去機体・本番機のセットアップと切り替えの手順 | [`docs/VEHICLE_SETUP_GUIDE.md`](docs/VEHICLE_SETUP_GUIDE.md) |
+| 過去機体など、別の機体で動かしたい (仕組み) | `main/mission/config.py` の一番上の `VEHICLE` (詳しくは [`docs/VEHICLES.md`](docs/VEHICLES.md)) |
 | 実機でやることを確認したい | [`main/FIELD_CHECKLIST.md`](main/FIELD_CHECKLIST.md) |
 | どの .py が何をするか知りたい | [`main/README.md`](main/README.md) の「ファイル一覧」 |
 | プログラムを変えたあとに壊れていないか確かめたい | `python3 test/run_all.py` (実機不要・数分) |
@@ -30,14 +31,14 @@ TRC2027/
 ├── config/      機体ごとの BNO055 キャリブレーション結果 (bno055_calib_<機体名>.json)
 ├── sensor/      センサのドライバ (BNO055, BMP180, GPS, HC-SR04) と部品 (カメラ検知・方位計算)
 ├── tools/       実機で手で動かす道具
-│   ├── vehicle_measure.py   機体の旋回・走行の速さを測る (★モータが動く)
+│   ├── vehicle_measure.py   機体の旋回・走行の速さを測り、確認後に config.py へ書き込む (★モータが動く)
 │   ├── finishv2.py          全センサ表示 (ゴール座標の測定)
 │   ├── bno055_calibrate.py  BNO055 のキャリブレーション保存 (本番前に必須)
 │   ├── phase5_live.py       Phase5 の検知確認 (--drive で走行)
 │   ├── motor_test.py / led_test.py
 │   └── network/             SSH・Wi-Fi の試験
 ├── test/        自動テスト (実機不要)。run_all.py で全部実行
-├── docs/        報告書・解説 (VEHICLES / PHASE5_GUIDE / REFACTOR_REPORT / REPORT / PROGRESS)
+├── docs/        報告書・解説 (VEHICLE_SETUP_GUIDE / VEHICLES / PHASE5_GUIDE / REFACTOR_REPORT / REPORT / PROGRESS)
 └── test_images/ カメラの確認画像
 ```
 

@@ -62,5 +62,6 @@
       (一番上の VEHICLE = "honban"/"old" で切り替え、一番下の if VEHICLE == "old": に過去機体だけ違う値)
 - [x] 書き間違い (config.py に無い名前・型違い・計算で決まる値の直接変更) は起動時にエラー (mission/vehicle.py)
 - [x] キャリブレーション結果は config/bno055_calib_<機体名>.json。機体名と BNO055 固有 ID の照合はそのまま
-- [x] vehicle_measure.py は config.py にそのまま貼れる形で表示
+- [x] vehicle_measure.py は測定後に「今の値 → 目安」を見せ、yes のときだけ config.py に書き込む (読み込み直して確認、だめなら元に戻す)
 - [x] test_vehicle.py 28 件 (リポジトリの config.py が honban になっているかも確認する)
+- [x] docs/VEHICLE_SETUP_GUIDE.md: 過去機体はプログラムの確認用、本番機で値を調整する進め方の手順書
