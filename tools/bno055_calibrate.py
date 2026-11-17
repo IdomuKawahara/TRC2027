@@ -67,9 +67,9 @@ def main():
     if args.show:
         return show(args.out)
 
-    print(f"機体: {C.VEHICLE_NAME} ({C.VEHICLE_DESCRIPTION})  保存先: {args.out}")
+    print(f"機体: {C.VEHICLE_NAME}  保存先: {args.out}")
     print("  ※ キャリブレーション結果は機体ごとに保存されます。違う機体なら先に "
-          "python3 tools/vehicle.py use <機体名> で切り替えてください\n")
+          "main/mission/config.py の一番上の VEHICLE を書き換えてください\n")
     bno = BNO055()
     if not bno.setUp(operation_mode=BNO055.OPERATION_MODE_NDOF):
         print("BNO055 を初期化できません。配線 (I2C) を確認してください。")

@@ -1,5 +1,3 @@
-# この Pi (SD カード) がどの機体に載っているか。Pi ごとに違うので git には入れない
-config/active_vehicle
 __pycache__/
 logs/
 .lgd-nfy*

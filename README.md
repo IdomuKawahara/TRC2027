@@ -9,7 +9,7 @@
 | ラズパイを一からセットアップしたい | [`main/README.md`](main/README.md) の手順書 |
 | 本番を動かしたい | `python3 main/main.py` |
 | 設定 (目標座標・会場・閾値) を変えたい | [`main/mission/config.py`](main/mission/config.py) だけ |
-| 過去機体など、別の機体で動かしたい | [`docs/VEHICLES.md`](docs/VEHICLES.md) (`python3 tools/vehicle.py`) |
+| 過去機体など、別の機体で動かしたい | `main/mission/config.py` の一番上の `VEHICLE` (詳しくは [`docs/VEHICLES.md`](docs/VEHICLES.md)) |
 | 実機でやることを確認したい | [`main/FIELD_CHECKLIST.md`](main/FIELD_CHECKLIST.md) |
 | どの .py が何をするか知りたい | [`main/README.md`](main/README.md) の「ファイル一覧」 |
 | プログラムを変えたあとに壊れていないか確かめたい | `python3 test/run_all.py` (実機不要・数分) |
@@ -21,16 +21,15 @@ TRC2027/
 ├── main/
 │   ├── main.py          本番の入口 (フェーズの切り替えだけ)
 │   ├── mission/         本番プログラムの中身
-│   │   ├── config.py      ★設定値はすべてここ
+│   │   ├── config.py      ★設定値はすべてここ (一番上の VEHICLE で機体を切り替え)
 │   │   ├── phase0_init.py 〜 phase5_camera.py   フェーズごとに 1 ファイル
 │   │   ├── stuck.py       スタック検知と回避
 │   │   └── state.py / logger.py / hardware.py / navigation.py / camera.py
 │   ├── README.md        セットアップ手順書・ファイル一覧
 │   └── FIELD_CHECKLIST.md  実機チェックリスト
-├── config/vehicles/<機体名>/   機体ごとの設定 (vehicle.toml) とキャリブレーション結果
+├── config/      機体ごとの BNO055 キャリブレーション結果 (bno055_calib_<機体名>.json)
 ├── sensor/      センサのドライバ (BNO055, BMP180, GPS, HC-SR04) と部品 (カメラ検知・方位計算)
 ├── tools/       実機で手で動かす道具
-│   ├── vehicle.py           機体プロファイルの確認・切り替え (本番前は check)
 │   ├── vehicle_measure.py   機体の旋回・走行の速さを測る (★モータが動く)
 │   ├── finishv2.py          全センサ表示 (ゴール座標の測定)
 │   ├── bno055_calibrate.py  BNO055 のキャリブレーション保存 (本番前に必須)

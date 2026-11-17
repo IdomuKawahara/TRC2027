@@ -42,15 +42,15 @@ def phase0_init() -> tuple:
     log(f"  目標座標: LAT={C.TARGET_LAT}  LNG={C.TARGET_LNG}")
     log(f"  会場 (地磁気偏角): {C.MAG_SITE_RESOLVED}  偏角={C.MAG_DECLINATION}°")
     # ── 機体プロファイル: どの機体の設定で動いているかを必ず表示する ──
-    src = {"env": "環境変数 CANSAT_VEHICLE", "file": "config/active_vehicle", "default": "未設定 → 既定"}[C.VEHICLE_SOURCE]
-    log(f"  機体: {C.VEHICLE_NAME}  ({C.VEHICLE_DESCRIPTION or '説明なし'})  [{src}]")
+    src = "環境変数 CANSAT_VEHICLE" if C.VEHICLE_SOURCE == "env" else "config.py の VEHICLE"
+    log(f"  機体: {C.VEHICLE_NAME}  [{src}]")
     if C.VEHICLE_OVERRIDES:
-        log(f"  この機体だけの設定 {len(C.VEHICLE_OVERRIDES)} 個 (config.py との違い):")
+        log(f"  この機体だけの値 {len(C.VEHICLE_OVERRIDES)} 個 (本番機との違い):")
         for key, old, new in C.VEHICLE_OVERRIDES:
             log(f"    {key} = {new!r}  (本番機の値: {old!r})")
-    if C.VEHICLE_ROLE != "competition":
+    if not C.IS_COMPETITION_VEHICLE:
         log("  ★★★ これは【試験用の機体】の設定です。本番機では使わないでください ★★★", "WARN")
-        log("      本番機に戻すには: python3 tools/vehicle.py use honban", "WARN")
+        log('      本番機に戻すには: main/mission/config.py の一番上を VEHICLE = "honban" にする', "WARN")
     log("=" * 62)
 
     # gpiozero バックエンド (全テストコードと統一)
@@ -119,7 +119,7 @@ def phase0_init() -> tuple:
         if C.BMP180_REQUIRED:
             log("BMP180 初期化失敗", "ERROR")
             sys.exit(1)
-        # 気圧センサの無い機体 (vehicle.toml で BMP180_REQUIRED = false)
+        # 気圧センサの無い機体 (config.py の機体ごとの値で BMP180_REQUIRED = False)
         log("BMP180 が使えません。この機体では必須ではないので、気圧なしで続行します", "WARN")
         bmp = None
     else:

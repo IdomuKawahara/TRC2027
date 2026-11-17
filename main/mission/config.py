@@ -18,6 +18,16 @@ _ROOT_DIR  = _MAIN_DIR.parent                        # TRC2027/
 _SENSOR_DIR = _ROOT_DIR / "sensor"
 
 # ===========================================================================
+# ★どの機体として動かすか (ここを書き換えるだけで切り替わる)
+# ===========================================================================
+#   "honban" : 本番機。このファイルの値そのままで動く
+#   "old"    : 過去機体 (コード確認用)。このファイルの一番下の「過去機体だけ違う値」が使われる
+# ★過去機体で試したあとは、必ず "honban" に戻すこと (戻し忘れると起動時に警告が出る)
+VEHICLE = "honban"
+
+VEHICLES = ("honban", "old")   # 使える機体の名前 (新しい機体を足すときはここにも書く)
+
+# ===========================================================================
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #   設定値  ← ここを実地に合わせて変更
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -346,7 +356,7 @@ HEADING_MIN_OFFSET_SAMPLES = 3    # [回]  これだけ学習してから「地�
 HEADING_OUTLIER_DEG       = 45.0  # [deg] 学習済みのずれからこれ以上外れた値は一時的な跳ねとして無視
 
 # --- ★main6: BNO055 キャリブレーションプロファイル ----------------------------
-# 保存先は機体ごと: config/vehicles/<機体名>/bno055_calib.json (このファイルの末尾で決まる)。
+# 保存先は機体ごと: config/bno055_calib_<機体名>.json (このファイルの末尾で決まる)。
 # tools/bno055_calibrate.py で作成する
 BNO_CALIB_LOAD = True             # 起動時にプロファイルを書き戻す
 BNO_CALIB_AUTOSAVE = True         # Phase3 で Gyro/Mag が 3 になったら上書き保存する
@@ -425,7 +435,7 @@ LOG_DIR = _ROOT_DIR / "logs"
 
 # --- 機体によって付いていないことがあるセンサ --------------------------------
 BMP180_REQUIRED = True   # True: 気圧センサ BMP180 が初期化できなければ起動を中止する (従来どおり)。
-                         # 気圧センサの無い機体では、その機体の vehicle.toml で false にする
+                         # 気圧センサの無い機体では、このファイルの一番下の if VEHICLE == ... の中で False にする
                          # (今のミッションは気圧の値を使っていないので、無くても走行できる)
 
 # --- 地磁気の平滑化 (元: グローバル共有変数セクション) ----------------------
@@ -480,30 +490,73 @@ BNO_ORIENTATION = 1
 
 
 # ===========================================================================
-# 機体プロファイル (★このファイルの最後に置くこと)
+# ★過去機体だけ違う値 (このファイルの一番上で VEHICLE = "old" にしたときだけ使われる)
 # ===========================================================================
-# 機体ごとに違う値 (ピン・取り付け向き・パルス長など) は、このファイルを書き換えずに
-# config/vehicles/<機体名>/vehicle.toml の [overrides] に書く。ここでそれを読み込んで
-# 上の値を上書きする。どの機体として動くかの決め方は mission/vehicle.py を参照
-# (何も設定していなければ本番機 "honban" = このファイルの値そのまま)。
+# 書き方: 上と同じ「名前 = 値」を、if の中に 4 文字下げて書く。行頭の # を外すと有効になる。
+#         下の値は「例」なので、過去機体の実物に合わせて書き換えること。
+#         本番機の値 (上の方) は書き換えない。
+# 書き間違い (上に無い名前・型の違い) は起動時にエラーで止まる。
+# 起動ログの最初に、ここで変えた値の一覧が出る。
 from . import vehicle as _vehicle
+VEHICLE, VEHICLE_SOURCE = _vehicle.choose(VEHICLE, VEHICLES)
+_before = _vehicle.snapshot(globals())     # ここまでの値 (= 本番機の値) を覚えておく
 
-# 他の値から計算される値・定数は、機体プロファイルでは直接変えさせない
-_VEHICLE_PROTECTED = ("WEAK_RATIO", "MAG_DECLINATION", "MAG_SITE_RESOLVED", "MAG_SITE_PRESETS",
-                      "BNO_CALIB_FILE", "LOG_DIR", "PHASE_NAMES", "PHASE5_RETURN_GPS",
-                      "KNOTS_TO_MPS", "EARTH_RADIUS", "SOUND_SPEED")
+if VEHICLE == "old":
+    # ── 1. 配線 (BCM ピン番号) ──────────────────────────────────────
+    # 前進させたら後ろに進む   → その側の IN1 と IN2 を入れ替える
+    # 右に曲がるはずが左に曲がる → A (右モータ) と B (左モータ) の組を丸ごと入れ替える
+    # PIN_PWMA = 13
+    # PIN_AIN1 = 6
+    # PIN_AIN2 = 5
+    # PIN_PWMB = 18
+    # PIN_BIN1 = 24
+    # PIN_BIN2 = 23
+    # PIN_STBY = 11
+    # PIN_TRIG = 8          # 超音波
+    # PIN_ECHO = 7
+    # LED_PIN  = 21
 
-VEHICLE_NAME, VEHICLE_SOURCE = _vehicle.active_vehicle_name()
-_vehicle_profile = _vehicle.load_profile(VEHICLE_NAME)
-VEHICLE_DESCRIPTION = _vehicle_profile["description"]
-VEHICLE_ROLE = _vehicle_profile["role"]                  # "competition" (本番機) / "test"
-VEHICLE_DIR = _vehicle_profile["dir"]
-VEHICLE_OVERRIDES = _vehicle.apply_overrides(
-    globals(), _vehicle_profile["overrides"], protected=_VEHICLE_PROTECTED,
-    where=f"config/vehicles/{VEHICLE_NAME}/vehicle.toml")  # [(名前, 元の値, 新しい値), ...]
+    # ── 2. センサの有無・取り付け向き ───────────────────────────────
+    # BMP180_REQUIRED = False   # 気圧センサが付いていない
+    # BNO_ORIENTATION = 1       # BNO055 の取り付け向き 1〜4 (0°/90°/180°/270°)
+    # CAM_ROTATE_180  = False   # カメラを正立で付けている (本番機は上下逆 = True)
+    # CAM_P4_ENABLE   = False   # カメラが付いていない (Phase5 は自動で超音波スキャンに切り替わる)
 
-# 上書きされた値から計算し直すもの
+    # ── 3. 走り方の違い (tools/vehicle_measure.py で測って決める) ─────
+    # FIG8_SPIN_SEC             = 8.0    # Phase3 のスピン。最低 1 回転できる秒数
+    # CAM_SEARCH_TURN_SEC       = 0.25   # Phase5 の探索: 1 回の旋回パルスの秒数
+    # CAM_SEARCH_PULSES_PER_LAP = 24     # 地磁気が読めないとき、1 周とみなす回数
+    # HEADING_COG_MIN_SPEED_MPS = 0.30   # 走行速度の 6 割くらい。機体がこれより遅いと GPS 方位が使われない
+    # STUCK_SPIN_GYRO_DPS       = 25.0   # 旋回速度の 3〜4 割
+
+    # ── 4. 超音波の取り付け位置 ──────────────────────────────────────
+    # GOAL_SONAR_DIST_M = 0.08   # 機体の先端がゴールに触れたときの超音波の値 + 2〜3cm
+
+    # ── 5. 地上試験を短くする (本番機の値は変わらない) ───────────────
+    # FALL_TIMEOUT_SEC = 20      # 落下検知の待ち時間 (本番は 420 秒)
+    # LED_BLINK_SEC    = 2.0     # フェーズ切り替えの LED 点滅 (本番は 10 秒)
+    pass
+
+
+# ---- ここから下は触らない ---------------------------------------------------
+# 書き間違いの検査と、変わった値の一覧 [(名前, 本番機の値, この機体の値), ...]
+VEHICLE_OVERRIDES = _vehicle.check_changes(
+    globals(), _before, where=f'config.py の if VEHICLE == "{VEHICLE}": の中',
+    protected=("VEHICLE", "VEHICLES", "VEHICLE_SOURCE",          # 機体の選択は一番上で
+               "WEAK_RATIO", "MAG_DECLINATION", "MAG_SITE_RESOLVED",  # 他の値から計算される
+               "MAG_SITE_PRESETS", "LOG_DIR", "PHASE_NAMES", "PHASE5_RETURN_GPS",
+               "KNOTS_TO_MPS", "EARTH_RADIUS", "SOUND_SPEED"))
+VEHICLE_NAME = VEHICLE
+IS_COMPETITION_VEHICLE = (VEHICLE == _vehicle.COMPETITION)
+if IS_COMPETITION_VEHICLE and VEHICLE_OVERRIDES:
+    # 本番機なのに値が変わった = if の外に書いてしまった (行頭の 4 文字下げ忘れ) など
+    raise _vehicle.VehicleError(
+        "本番機なのに、config.py の一番下で値が変わっています (if の中の行頭の 4 文字下げを忘れていませんか?): "
+        + ", ".join(k for k, _, _ in VEHICLE_OVERRIDES))
+
+# 変えた値から計算し直すもの
 WEAK_RATIO = SPEED_WEAK / RAMP_START_DUTY
 MAG_SITE_RESOLVED, MAG_DECLINATION = _resolve_mag_declination(
     MAG_SITE, TARGET_LAT, TARGET_LNG, MAG_DECLINATION_OVERRIDE)
-BNO_CALIB_FILE = VEHICLE_DIR / "bno055_calib.json"       # 機体ごとのキャリブレーション結果
+# キャリブレーション結果は機体ごとに別のファイル (別の機体の結果を使わないため)
+BNO_CALIB_FILE = _ROOT_DIR / "config" / f"bno055_calib_{VEHICLE}.json"

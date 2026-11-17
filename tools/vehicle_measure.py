@@ -1,8 +1,8 @@
 """
 vehicle_measure.py
 ==================
-★モータが動きます★  機体の「旋回の速さ」「走る速さ」を実際に測り、その機体の
-vehicle.toml に書く値の目安を表示する。
+★モータが動きます★  機体の「旋回の速さ」「走る速さ」を実際に測り、その機体に
+合う設定値の目安を表示する。
 
 機体が変わると、同じ秒数モータを回しても回る角度・進む距離が変わる。
 プログラムには「0.25 秒で約 30° 回る」「8 秒で 1 回転以上する」といった、秒数で
@@ -13,7 +13,8 @@ vehicle.toml に書く値の目安を表示する。
     python3 tools/vehicle_measure.py --forward 5     # 加えて 5 秒前進して速度も測る (屋外・GPS が必要)
 
 機体を床に置き、周りに人や物がないことを確認してから。止めるときは Ctrl+C。
-結果の「vehicle.toml に書く値」を config/vehicles/<今の機体>/vehicle.toml の [overrides] に写す。
+表示された行を、main/mission/config.py の一番下の if VEHICLE == "<今の機体>": の中に写す
+(本番機で測ったときは、config.py の上の方の本番機の値を書き換える)。
 """
 import argparse
 import math
@@ -33,7 +34,7 @@ SEARCH_STEP_DEG = 30.0               # Phase5 の探索で 1 回に回したい�
 
 def suggest(turn_rate_dps, speed_mps=None, pulse_rate_dps=None):
     """
-    測った値から、vehicle.toml に書く値の目安を作る (純粋な計算。テストできる)。
+    測った値から、設定値の目安を作る (純粋な計算。テストできる)。
       turn_rate_dps : 片輪旋回 (turn_*_strong) を続けたときの回る速さ [deg/s]
       pulse_rate_dps: 短いパルス (約 0.25 秒) での平均の速さ [deg/s]。動き出しが遅い機体では
                       turn_rate_dps より小さい。None なら turn_rate_dps を使う
@@ -69,8 +70,9 @@ def suggest(turn_rate_dps, speed_mps=None, pulse_rate_dps=None):
     return out, notes
 
 
-def format_toml(values: dict) -> str:
-    return "\n".join(f"{k} = {v}" for k, v in values.items())
+def format_lines(values: dict) -> str:
+    """config.py の if VEHICLE == ...: の中にそのまま貼れる形 (4 文字下げ)。"""
+    return "\n".join(f"    {k} = {v!r}" for k, v in values.items())
 
 
 # ── ここから下は実機 (モータ・BNO055・GPS) を使う ─────────────────────
@@ -99,7 +101,7 @@ def main():
     ap.add_argument("--yes", action="store_true", help="確認の入力を省略")
     args = ap.parse_args()
 
-    print(f"機体: {C.VEHICLE_NAME} ({C.VEHICLE_DESCRIPTION})")
+    print(f"機体: {C.VEHICLE_NAME}")
     print("★ モータが動きます。機体を床に置き、周りに人や物がないことを確認してください ★")
     if not args.yes:
         try:
@@ -160,8 +162,11 @@ def main():
         motor.close()
 
     values, notes = suggest(min(rates), speed, min(pulse_rates))
-    print(f"\n── config/vehicles/{C.VEHICLE_NAME}/vehicle.toml の [overrides] に書く値の目安 ──")
-    print(format_toml(values) or "(なし)")
+    if C.IS_COMPETITION_VEHICLE:
+        print("\n── 本番機の値の目安 (config.py の上の方の値を書き換える) ──")
+    else:
+        print(f'\n── config.py の一番下の if VEHICLE == "{C.VEHICLE_NAME}": の中に写す値の目安 ──')
+    print(format_lines(values) or "(なし)")
     for n in notes:
         print(f"注意: {n}")
     print("\n今の値との比較:")

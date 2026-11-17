@@ -19,7 +19,7 @@
 | ☐ | やること | コマンド / 方法 | 合格の目安 |
 |---|---|---|---|
 | ☐ | プログラムを最新にする | `cd ~/TRC2027 && git pull` | エラーが出ない |
-| ☐ | **どの機体の設定か** | `python3 tools/vehicle.py` | 載せている機体の名前になっている。過去機体で試すなら `use old`、**本番機なら `python3 tools/vehicle.py check` で ✅** (詳しくは `docs/VEHICLES.md`) |
+| ☐ | **どの機体の設定か** | `grep '^VEHICLE =' main/mission/config.py` | 載せている機体の名前になっている。過去機体なら `"old"`、**本番機なら `"honban"`** (詳しくは `docs/VEHICLES.md`) |
 | ☐ | ライブラリがそろっているか | `python3 -c "import cv2, picamera2, numpy; print(cv2.__version__)"` | `4.10.0` などが表示される |
 | ☐ | ソフトのテストが全部通るか | `python3 test/run_all.py` (数分) | 最後の一覧がすべて ✅ |
 | ☐ | カメラが認識されるか | `rpicam-hello --list-cameras` | `imx219` が表示される |
@@ -58,14 +58,14 @@ python3 tools/bno055_calibrate.py
 | ☐ | 机に置いて数秒動かさない | `Gyro=3` |
 | ☐ | 機体を 6 方向 (上・下・左・右・前・後ろを上にする) に向けて数秒ずつ静止 | `Acc=3` |
 | ☐ | 空中で大きく 8 の字を描くように、ゆっくり回す | `Mag=3` |
-| ☐ | 4 つとも 3 になると自動で保存 | `保存しました: .../config/vehicles/<機体名>/bno055_calib.json` (機体ごとに別の場所) |
+| ☐ | 4 つとも 3 になると自動で保存 | `保存しました: .../config/bno055_calib_<機体名>.json` (機体ごとに別のファイル) |
 | ☐ | 保存内容を確認 | `python3 tools/bno055_calibrate.py --show` で値が表示される |
 
 - 鉄の机・PC・スマホ・工具の近くは避ける。
 - Acc がどうしても 3 にならないときは `python3 tools/bno055_calibrate.py --partial` で起動し、Gyro と Mag が 3 になったところで Ctrl+C。
 - 機体の部品 (電池・モータ・配線) の位置を変えたら、**もう一度やり直す**。
 - キャリブレーション結果は **機体ごと** に保存される。別の機体・別の BNO055 の結果は起動時に使われない (機体を変えたら取り直す)。
-- 作ったファイル `config/vehicles/<機体名>/bno055_calib.json` はコミットしておくと、SD カードを作り直しても使える。
+- 作ったファイル `config/bno055_calib_<機体名>.json` はコミットしておくと、SD カードを作り直しても使える。
 
 メモ (保存日時 ______):
 
@@ -171,7 +171,7 @@ python3 main/main.py
 
 | ☐ | やること | 合格の目安 |
 |---|---|---|
-| ☐ | **本番機の設定か** | `python3 tools/vehicle.py check` が ✅ (過去機体の設定のまま走らせない) |
+| ☐ | **本番機の設定か** | `main/mission/config.py` の一番上が `VEHICLE = "honban"`。起動ログに「試験用の機体」の警告が出ない (過去機体の設定のまま走らせない) |
 | ☐ | 本番と同じ手順で起動 (`nohup python3 main/main.py > logs/nohup.log 2>&1 &`) し、SSH を切る | SSH を切っても動き続ける |
 | ☐ | 落下試験 (高い所から吊るして落とす・放出機構で落とす) | Phase1 → 2 → 3 → 4 → 5 と進み、0m 到達 |
 | ☐ | Phase5 で見つからないとき | ゴールを遠くに置く → 1 周 → 前進 → Phase4 に戻り → 再び近づく |

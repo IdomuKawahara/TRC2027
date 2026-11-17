@@ -1,7 +1,7 @@
 """
 test_vehicle.py
 ===============
-機体プロファイル (main/mission/vehicle.py)・機体ごとのキャリブレーション
+機体の切り替え (config.py の VEHICLE と main/mission/vehicle.py)・機体ごとのキャリブレーション
 (sensor/bno_calib.py)・Phase0 での扱いのテスト。実機には触れない。
 
     python3 test/test_vehicle.py
@@ -32,179 +32,158 @@ SAMPLE = bytes([0xF6, 0xFF, 0x12, 0x00, 0xE8, 0xFF, 0x40, 0x01, 0x9C, 0xFF, 0x20
                 0xFE, 0xFF, 0x01, 0x00, 0x00, 0x00, 0xE8, 0x03, 0x8F, 0x02])
 
 
-def config_for(vehicle, extra_env=None):
-    """別プロセスで、その機体として config を読み込んだ結果を返す。"""
+def config_for(vehicle, insert=None, outside=None):
+    """
+    別プロセスで、その機体として config を読み込んだ結果を返す。
+    insert を渡すと、config.py のコピーの if VEHICLE == "old": の中にその行を足して読み込む
+    outside を渡すと、if の外 (4 文字下げ忘れ) にその行を足す。
+    (本物の config.py は書き換えない)。
+    """
+    pkg_root = ROOT / "main"
+    tmp = None
+    if insert is not None or outside is not None:
+        tmp = tempfile.TemporaryDirectory(dir=HERE)
+        pkg = Path(tmp.name) / "mission"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "vehicle.py").write_text((ROOT / "main/mission/vehicle.py").read_text(encoding="utf-8"),
+                                        encoding="utf-8")
+        src = (ROOT / "main/mission/config.py").read_text(encoding="utf-8")
+        marker = 'if VEHICLE == "old":\n'
+        assert marker in src
+        src = src.replace(marker, marker + "".join(f"    {l}\n" for l in insert or []))
+        tail = "# ---- ここから下は触らない"
+        assert tail in src
+        src = src.replace(tail, "".join(f"{l}\n" for l in outside or []) + tail)
+        (pkg / "config.py").write_text(src, encoding="utf-8")
+        pkg_root = Path(tmp.name)
     code = ("import json, sys; sys.path.insert(0, %r)\n"
             "from mission import config as C\n"
-            "print(json.dumps({'name': C.VEHICLE_NAME, 'src': C.VEHICLE_SOURCE, 'role': C.VEHICLE_ROLE,"
-            " 'n': len(C.VEHICLE_OVERRIDES), 'calib': str(C.BNO_CALIB_FILE),"
-            " 'weak': C.WEAK_RATIO, 'rot': C.CAM_ROTATE_180, 'fall': C.FALL_TIMEOUT_SEC}))") % str(ROOT / "main")
+            "print(json.dumps({'name': C.VEHICLE_NAME, 'src': C.VEHICLE_SOURCE,"
+            " 'comp': C.IS_COMPETITION_VEHICLE, 'n': len(C.VEHICLE_OVERRIDES), 'calib': str(C.BNO_CALIB_FILE),"
+            " 'weak': C.WEAK_RATIO, 'rot': C.CAM_ROTATE_180, 'fall': C.FALL_TIMEOUT_SEC,"
+            " 'size': list(C.CAM_SIZE), 'size_t': type(C.CAM_SIZE).__name__}))") % str(pkg_root)
     env = dict(os.environ)
     env.pop("CANSAT_VEHICLE", None)
     if vehicle is not None:
         env["CANSAT_VEHICLE"] = vehicle
-    env.update(extra_env or {})
-    p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    try:
+        p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    finally:
+        if tmp:
+            tmp.cleanup()
     return p.returncode, (json.loads(p.stdout.strip().splitlines()[-1]) if p.returncode == 0 else p.stderr)
 
 
-class TestActiveVehicle(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=HERE)
-        self.dir = Path(self.tmp.name)
-        self.active = self.dir / "active_vehicle"
+class TestChoose(unittest.TestCase):
+    KNOWN = ("honban", "old")
 
-    def tearDown(self):
-        self.tmp.cleanup()
+    def test_config_value_is_used(self):
+        self.assertEqual(V.choose("old", self.KNOWN, env={}), ("old", "config"))
+        self.assertEqual(V.choose("honban", self.KNOWN, env={"CANSAT_VEHICLE": " "}), ("honban", "config"))
 
-    def test_default_is_competition_vehicle(self):
-        self.assertEqual(V.active_vehicle_name(env={}, active_file=self.active), ("honban", "default"))
+    def test_env_overrides_for_tests(self):
+        self.assertEqual(V.choose("old", self.KNOWN, env={"CANSAT_VEHICLE": "honban"}), ("honban", "env"))
 
-    def test_file_then_env_priority(self):
-        self.active.write_text("old\n", encoding="utf-8")
-        self.assertEqual(V.active_vehicle_name(env={}, active_file=self.active), ("old", "file"))
-        self.assertEqual(V.active_vehicle_name(env={"CANSAT_VEHICLE": "mk2"}, active_file=self.active),
-                         ("mk2", "env"))
-
-    def test_empty_file_falls_back_to_default(self):
-        self.active.write_text("\n  \n", encoding="utf-8")
-        self.assertEqual(V.active_vehicle_name(env={}, active_file=self.active)[0], "honban")
-
-    def test_bad_name_rejected(self):
-        for bad in ("../etc", "a b", "名前", "x" * 40):
+    def test_unknown_name_rejected(self):
+        for bad in ("olld", "Honban", "", "../x"):
             with self.subTest(bad=bad), self.assertRaises(V.VehicleError):
-                V.active_vehicle_name(env={"CANSAT_VEHICLE": bad}, active_file=self.active)
-
-
-class TestLoadProfile(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=HERE)
-        self.dir = Path(self.tmp.name)
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def write(self, name, text):
-        d = self.dir / name
-        d.mkdir()
-        (d / "vehicle.toml").write_text(text, encoding="utf-8")
-
-    def test_load(self):
-        self.write("old", '[vehicle]\ndescription = "旧"\nrole = "test"\n[overrides]\nPIN_AIN1 = 5\n')
-        p = V.load_profile("old", self.dir)
-        self.assertEqual((p["description"], p["role"], p["overrides"]), ("旧", "test", {"PIN_AIN1": 5}))
-        self.assertEqual(V.list_vehicles(self.dir), ["old"])
-
-    def test_missing_competition_profile_is_tolerated(self):
-        p = V.load_profile("honban", self.dir)
-        self.assertEqual((p["role"], p["overrides"], p["exists"]), ("competition", {}, False))
-
-    def test_missing_other_profile_is_error(self):
+                V.choose(bad, self.KNOWN, env={})
         with self.assertRaises(V.VehicleError):
-            V.load_profile("old", self.dir)
-
-    def test_broken_toml_bad_role_unknown_section(self):
-        self.write("a", "[overrides\nX = 1")
-        self.write("b", '[vehicle]\nrole = "race"\n')
-        self.write("c", "[override]\nPIN_AIN1 = 5\n")          # s が抜けている
-        for name in ("a", "b", "c"):
-            with self.subTest(name=name), self.assertRaises(V.VehicleError):
-                V.load_profile(name, self.dir)
-
-    def test_default_role(self):
-        self.write("x", "[overrides]\n")
-        self.assertEqual(V.load_profile("x", self.dir)["role"], "test")
+            V.choose("honban", self.KNOWN, env={"CANSAT_VEHICLE": "mk9"})
 
 
-class TestApplyOverrides(unittest.TestCase):
-    def ns(self):
-        return {"PIN_AIN1": 6, "CAM_ROTATE_180": True, "FIG8_SPIN_SEC": 8.0, "CAM_BACKEND": "auto",
-                "CAM_SIZE": (320, 240), "CAM_HUE_RANGES": ((0, 12), (165, 179)),
-                "MAG_DECLINATION_OVERRIDE": None, "WEAK_RATIO": 0.5, "_ROOT_DIR": "x", "VEHICLE_NAME": "h"}
+class TestCheckChanges(unittest.TestCase):
+    BASE = {"PIN_AIN1": 6, "CAM_ROTATE_180": True, "FIG8_SPIN_SEC": 8.0, "CAM_BACKEND": "auto",
+            "CAM_SIZE": (320, 240), "CAM_HUE_RANGES": ((0, 12), (165, 179)),
+            "MAG_DECLINATION_OVERRIDE": None, "WEAK_RATIO": 0.5, "_ROOT_DIR": "x"}
+
+    def run_block(self, **changes):
+        ns = dict(self.BASE)
+        before = V.snapshot(ns)
+        ns.update(changes)
+        return ns, V.check_changes(ns, before, protected=("WEAK_RATIO",))
+
+    def test_no_change(self):
+        self.assertEqual(self.run_block()[1], [])
+        self.assertEqual(self.run_block(PIN_AIN1=6)[1], [], "同じ値は違いとして数えない")
 
     def test_types(self):
-        ns = self.ns()
-        ch = V.apply_overrides(ns, {"PIN_AIN1": 5, "CAM_ROTATE_180": False, "FIG8_SPIN_SEC": 12,
-                                    "CAM_BACKEND": "numpy", "CAM_SIZE": [640, 480],
-                                    "CAM_HUE_RANGES": [[0, 20]], "MAG_DECLINATION_OVERRIDE": -7.5})
+        ns, ch = self.run_block(PIN_AIN1=5, CAM_ROTATE_180=False, FIG8_SPIN_SEC=12, CAM_BACKEND="numpy",
+                                CAM_SIZE=[640, 480], CAM_HUE_RANGES=((0, 20),), MAG_DECLINATION_OVERRIDE=-7.5)
         self.assertEqual(ns["PIN_AIN1"], 5)
-        self.assertIs(ns["CAM_ROTATE_180"], False)
         self.assertEqual((ns["FIG8_SPIN_SEC"], type(ns["FIG8_SPIN_SEC"])), (12.0, float))
         self.assertEqual(ns["CAM_SIZE"], (640, 480))
-        self.assertEqual(ns["CAM_HUE_RANGES"], ((0, 20),))
-        self.assertEqual(ns["MAG_DECLINATION_OVERRIDE"], -7.5)
         self.assertEqual(len(ch), 7)
         self.assertIn(("PIN_AIN1", 6, 5), ch)
-
-    def test_same_value_is_not_reported_as_change(self):
-        self.assertEqual(V.apply_overrides(self.ns(), {"PIN_AIN1": 6}), [])
 
     def test_rejects(self):
         cases = {
             "typo": {"PIN_AIN": 5}, "pin as float": {"PIN_AIN1": 5.0}, "pin as string": {"PIN_AIN1": "5"},
             "bool as int": {"CAM_ROTATE_180": 0}, "int as bool": {"PIN_AIN1": True},
-            "float as string": {"FIG8_SPIN_SEC": "8"}, "tuple length": {"CAM_SIZE": [320]},
+            "float as string": {"FIG8_SPIN_SEC": "8"}, "tuple length": {"CAM_SIZE": (320,)},
             "tuple as scalar": {"CAM_SIZE": 320}, "protected": {"WEAK_RATIO": 0.3},
-            "private": {"_ROOT_DIR": "y"}, "vehicle meta": {"VEHICLE_NAME": "z"}, "lowercase": {"pin": 1},
         }
-        for label, ov in cases.items():
-            with self.subTest(label=label):
-                ns = self.ns()
-                with self.assertRaises(V.VehicleError):
-                    V.apply_overrides(ns, ov, protected=("WEAK_RATIO",))
+        for label, ch in cases.items():
+            with self.subTest(label=label), self.assertRaises(V.VehicleError):
+                self.run_block(**ch)
 
     def test_typo_message_suggests_near_names(self):
-        try:
-            V.apply_overrides(self.ns(), {"PIN_AIN": 5})
-        except V.VehicleError as e:
-            self.assertIn("PIN_AIN1", str(e))
+        with self.assertRaises(V.VehicleError) as cm:
+            self.run_block(PIN_AIN=5)
+        self.assertIn("PIN_AIN1", str(cm.exception))
+
+    def test_lowercase_helpers_are_ignored(self):
+        self.assertEqual(self.run_block(tmp=1, _x=2)[1], [])
 
 
 class TestConfigWithVehicles(unittest.TestCase):
     """実際の config.py を、機体を変えて別プロセスで読み込む。"""
 
-    def test_shipped_profiles_load_and_calibration_is_per_vehicle(self):
+    def test_honban_and_old_load_with_separate_calibration(self):
         rc, h = config_for("honban")
         self.assertEqual(rc, 0, h)
         rc, o = config_for("old")
         self.assertEqual(rc, 0, o)
-        self.assertEqual((h["name"], h["role"], h["n"]), ("honban", "competition", 0),
-                         "本番機は config.py の値そのまま (差分なし)")
-        self.assertEqual((o["name"], o["role"]), ("old", "test"))
-        self.assertTrue(h["calib"].endswith("config/vehicles/honban/bno055_calib.json"))
-        self.assertTrue(o["calib"].endswith("config/vehicles/old/bno055_calib.json"))
-        self.assertNotEqual(h["calib"], o["calib"])
+        self.assertEqual((h["name"], h["comp"], h["n"]), ("honban", True, 0),
+                         "本番機は config.py の値そのまま (違いなし)")
+        self.assertEqual((o["name"], o["comp"]), ("old", False))
+        self.assertTrue(h["calib"].endswith("config/bno055_calib_honban.json"))
+        self.assertTrue(o["calib"].endswith("config/bno055_calib_old.json"))
 
-    def test_unset_means_competition_vehicle(self):
-        if V.ACTIVE_FILE.exists():
-            self.skipTest("この Pi は config/active_vehicle で機体が指定されている")
+    def test_shipped_config_selects_competition_vehicle(self):
+        """リポジトリの config.py は本番機を選んでいること (old のまま push していない)。"""
         rc, c = config_for(None)
-        self.assertEqual((rc, c["name"], c["src"]), (0, "honban", "default"))
+        self.assertEqual((rc, c["name"], c["src"]), (0, "honban", "config"),
+                         'main/mission/config.py の VEHICLE が "honban" になっていません')
 
     def test_unknown_vehicle_fails_fast(self):
         rc, err = config_for("no_such_vehicle")
         self.assertNotEqual(rc, 0)
-        self.assertIn("プロファイルがありません", err)
+        self.assertIn("知らない機体", err)
 
-    def test_overrides_and_derived_values(self):
-        d = V.VEHICLES_DIR / "zz_unittest"
-        d.mkdir(parents=True, exist_ok=True)
-        try:
-            (d / "vehicle.toml").write_text(
-                '[vehicle]\ndescription = "t"\nrole = "test"\n[overrides]\n'
-                'CAM_ROTATE_180 = false\nFALL_TIMEOUT_SEC = 20\nSPEED_WEAK = 0.2\n', encoding="utf-8")
-            rc, c = config_for("zz_unittest")
-            self.assertEqual(rc, 0, c)
-            self.assertEqual((c["rot"], c["fall"], c["n"]), (False, 20, 3))
-            self.assertAlmostEqual(c["weak"], 0.25, msg="SPEED_WEAK を変えたら WEAK_RATIO も計算し直す")
-            (d / "vehicle.toml").write_text('[overrides]\nPIN_AIN = 5\n', encoding="utf-8")
-            rc, err = config_for("zz_unittest")
-            self.assertNotEqual(rc, 0)
-            self.assertIn("config.py にありません", err)
-        finally:
-            for f in d.iterdir():
-                f.unlink()
-            d.rmdir()
+    def test_old_block_values_and_derived_values(self):
+        lines = ["CAM_ROTATE_180 = False", "FALL_TIMEOUT_SEC = 20", "SPEED_WEAK = 0.2", "CAM_SIZE = [640, 480]"]
+        rc, c = config_for("old", insert=lines)
+        self.assertEqual(rc, 0, c)
+        self.assertEqual((c["rot"], c["fall"], c["n"], c["size"], c["size_t"]), (False, 20, 4, [640, 480], "tuple"))
+        self.assertAlmostEqual(c["weak"], 0.25, msg="SPEED_WEAK を変えたら WEAK_RATIO も計算し直す")
+        rc, h = config_for("honban", insert=lines)
+        self.assertEqual((rc, h["rot"], h["fall"], h["n"]), (0, True, 420, 0), "本番機には混ざらない")
+
+    def test_old_block_typo_fails_fast(self):
+        rc, err = config_for("old", insert=["PIN_AIN = 5"])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("config.py にありません", err)
+        self.assertIn("PIN_AIN1", err)
+        rc, err = config_for("old", insert=["CAM_ROTATE_180 = 0"])
+        self.assertIn("型が違います", err)
+
+    def test_unindented_line_is_caught_on_competition_vehicle(self):
+        """if の外に書いてしまった (4 文字下げ忘れ) 値で本番機が変わったら止める。"""
+        rc, err = config_for("honban", outside=["FIG8_SPIN_SEC = 12.0"])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("4 文字下げ", err)
 
     def test_honban_values_equal_plain_config(self):
         self.assertEqual((C.VEHICLE_NAME, C.VEHICLE_OVERRIDES), ("honban", []))
@@ -275,8 +254,8 @@ class TestPhase0WithVehicle(unittest.TestCase):
     """Phase0 が、別の機体・別のセンサのキャリブレーションを書き込まないこと、BMP180 の扱い。"""
     PATCH = ("BNO055", "BMP180", "LED", "SonarSensor", "MotorController", "MicropyGPS",
              "gps_thread_func", "set_bno_orientation", "LGPIOFactory", "Device", "log")
-    CFG = ("BNO_CALIB_FILE", "LOG_DIR", "BMP180_REQUIRED", "VEHICLE_NAME", "VEHICLE_ROLE",
-           "VEHICLE_OVERRIDES", "VEHICLE_SOURCE", "VEHICLE_DESCRIPTION")
+    CFG = ("BNO_CALIB_FILE", "LOG_DIR", "BMP180_REQUIRED", "VEHICLE_NAME", "IS_COMPETITION_VEHICLE",
+           "VEHICLE_OVERRIDES", "VEHICLE_SOURCE")
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=HERE)
@@ -345,7 +324,7 @@ class TestPhase0WithVehicle(unittest.TestCase):
         self.assertIn("別の BNO055", self.text("WARN"))
 
     def test_banner_and_log_name_show_vehicle(self):
-        C.VEHICLE_NAME, C.VEHICLE_ROLE, C.VEHICLE_DESCRIPTION = "old", "test", "過去機体"
+        C.VEHICLE_NAME, C.IS_COMPETITION_VEHICLE = "old", False
         C.VEHICLE_OVERRIDES = [("CAM_ROTATE_180", True, False)]
         *_, log_path = P0.phase0_init()
         self.assertTrue(log_path.name.startswith("mission_old_"))
@@ -393,12 +372,14 @@ class TestMeasureSuggestions(unittest.TestCase):
         self.assertEqual(out, {})
         self.assertTrue(notes)
 
-    def test_output_is_valid_overrides(self):
-        """目安の値は、そのまま vehicle.toml に書いて読み込める名前・型になっている。"""
-        import tomllib
+    def test_output_can_be_pasted_into_config(self):
+        """表示した行は、そのまま config.py の if VEHICLE == "old": の中に貼って読み込める。"""
         out, _ = VM.suggest(25.0, speed_mps=0.2)
-        ns = {k: getattr(C, k) for k in out}
-        V.apply_overrides(ns, tomllib.loads(VM.format_toml(out)))
+        text = VM.format_lines(out)
+        self.assertTrue(all(l.startswith("    ") for l in text.splitlines()))
+        rc, c = config_for("old", insert=[l.strip() for l in text.splitlines()])
+        self.assertEqual(rc, 0, c)
+        self.assertEqual(c["n"], len(out))
 
 
 if __name__ == "__main__":
